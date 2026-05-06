@@ -4,7 +4,7 @@ Voice-first desktop assistant that turns speech into app actions.
 
 ## What It Does
 
-JARVIS listens for a hotkey, records speech, transcribes it, collects desktop and browser context, parses a structured intent, confirms risky actions, executes through browser automation, and logs the result for future learning.
+Whisperflowactions listens for a hotkey, records speech, transcribes it, collects desktop and browser context, parses a structured intent, confirms risky actions, executes through browser automation, and logs the result for future learning.
 
 The current MVP supports:
 
