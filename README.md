@@ -1,4 +1,4 @@
-# JARVIS MVP
+# Whisperflowactions
 
 Voice-first desktop assistant that turns speech into app actions.
 
