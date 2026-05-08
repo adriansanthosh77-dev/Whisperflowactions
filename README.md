@@ -1,11 +1,11 @@
-# JARVIS MVP
+# Whisperflowactions
 
 Voice-first desktop assistant that turns speech into app actions.
 Works with **any language**, runs fully local with **Ollama**, or cloud with **OpenAI**.
 
 ## What It Does
 
-JARVIS listens for a hotkey, records speech, transcribes it, collects desktop and browser context, parses a structured intent, confirms risky actions, executes through browser automation, and logs the result for future learning.
+Whisperflowactions listens for a hotkey, records speech, transcribes it, collects desktop and browser context, parses a structured intent, confirms risky actions, executes through browser automation, and logs the result for future learning.
 
 The current MVP supports:
 
