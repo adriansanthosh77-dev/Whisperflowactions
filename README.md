@@ -1,6 +1,7 @@
 # JARVIS MVP
 
 Voice-first desktop assistant that turns speech into app actions.
+Works with **any language**, runs fully local with **Ollama**, or cloud with **OpenAI**.
 
 ## What It Does
 
@@ -16,16 +17,17 @@ The current MVP supports:
 - Adaptive UI memory from successful DOM/text/role/mouse strategies
 - Optional screenshot, video, and Playwright trace evidence for UI changes
 - Bounded observe-plan-act loop for browser tasks
+- **Multi-language speech recognition** (auto-detect or pinned language)
+- **Local LLM support** via Ollama (llama3, mistral, phi3, gemma2, etc.)
+- **Parallel pipeline** — STT and context collection run concurrently for <3s latency
 
 ## Runtime Flow
 
 ```text
 Ctrl+Space
-  -> audio capture with VAD
-  -> Whisper speech-to-text
-  -> desktop context + DOM snapshot + mouse position
-  -> app structure map: headings, forms, landmarks, top sections
-  -> OpenAI intent JSON
+  -> audio capture with VAD (500ms silence cutoff)
+  -> [parallel] Whisper STT (any language) + context collection
+  -> LLM intent parse (OpenAI API or local Ollama)
   -> confirmation for risky actions
   -> Playwright executor
   -> selector, role/text, DOM-box mouse, screenshot fallback
@@ -40,8 +42,8 @@ Ctrl+Space
 core/
   orchestrator.py       Main event loop
   audio_capture.py      Microphone input and VAD
-  stt_engine.py         Whisper.cpp or OpenAI STT fallback
-  intent_parser.py      Speech/context to JSON intent
+  stt_engine.py         Whisper.cpp (multilingual) or OpenAI STT fallback
+  intent_parser.py      Speech/context to JSON intent (OpenAI or Ollama)
   context_collector.py  Active window, clipboard, DOM, mouse
   action_router.py      Intent to executor routing
   feedback_store.py     SQLite history, corrections, learning hints
@@ -68,9 +70,20 @@ ui/
 Then edit `.env` and set:
 
 ```text
-OPENAI_API_KEY=...
+# Speech-to-text
 WHISPER_BIN=whisper-cli
-WHISPER_MODEL_PATH=models/ggml-base.en.bin
+WHISPER_MODEL_PATH=models/ggml-base.bin   # use ggml-base.bin for multilingual
+WHISPER_LANGUAGE=auto                     # auto | en | hi | es | ar | zh | ja | etc.
+
+# LLM provider (pick one)
+LLM_PROVIDER=openai                       # openai | ollama
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+# — or for fully local —
+# LLM_PROVIDER=ollama
+# OLLAMA_MODEL=llama3                     # any model pulled via: ollama pull llama3
+# OLLAMA_BASE_URL=http://localhost:11434
+
 BROWSER_PROFILE_PATH=C:\Users\you\AppData\Local\JARVIS\browser-profile
 RECORD_VIDEO_DIR=data/videos
 RECORD_TRACE_DIR=data/traces
@@ -97,3 +110,25 @@ python core/orchestrator.py
 ## Hotkey
 
 `Ctrl + Space` starts listening.
+
+## Running Fully Local (No API Keys)
+
+1. Install [Ollama](https://ollama.com) and pull a model:
+   ```bash
+   ollama pull llama3
+   ```
+2. Download the multilingual Whisper model:
+   ```bash
+   # From https://huggingface.co/ggerganov/whisper.cpp
+   curl -L -o models/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+   ```
+3. Set `.env`:
+   ```text
+   LLM_PROVIDER=ollama
+   OLLAMA_MODEL=llama3
+   WHISPER_LANGUAGE=auto
+   WHISPER_MODEL_PATH=models/ggml-base.bin
+   ```
+4. Run: `python core\orchestrator.py`
+
+No OpenAI API key required. Everything runs on your machine.

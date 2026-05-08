@@ -11,9 +11,12 @@ from playwright.sync_api import (
     sync_playwright, Browser, BrowserContext, Page, Playwright, TimeoutError as PWTimeout
 )
 from dotenv import load_dotenv
+from core.block_detector import BlockDetector
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+_detector = BlockDetector()
 
 BROWSER_PROFILE = os.getenv("BROWSER_PROFILE_PATH", "")
 RECORD_VIDEO_DIR = os.getenv("RECORD_VIDEO_DIR", "").strip()
@@ -33,6 +36,15 @@ class BaseExecutor:
     _browser: Optional[Browser] = None
     _context: Optional[BrowserContext] = None
     _action_events: list[dict] = []
+    _abort_execution: bool = False
+
+    @classmethod
+    def close_active_page_tasks(cls):
+        cls._abort_execution = True
+
+    @classmethod
+    def reset_abort_signal(cls):
+        cls._abort_execution = False
 
     @classmethod
     def _ensure_browser(cls):
@@ -50,10 +62,20 @@ class BaseExecutor:
             context_kwargs["record_video_dir"] = RECORD_VIDEO_DIR
 
         if BROWSER_PROFILE:
-            cls._context = cls._playwright.chromium.launch_persistent_context(
-                BROWSER_PROFILE, **launch_kwargs, **context_kwargs
-            )
-            cls._browser = cls._context.browser
+            # Check for profile lock to avoid cryptic Playwright errors
+            lock_path = Path(BROWSER_PROFILE) / "SingletonLock"
+            if lock_path.exists():
+                logger.warning(f"Browser profile '{BROWSER_PROFILE}' appears to be in use (SingletonLock exists). JARVIS may fail to launch. Close other Chrome instances using this profile.")
+            
+            try:
+                cls._context = cls._playwright.chromium.launch_persistent_context(
+                    BROWSER_PROFILE, **launch_kwargs, **context_kwargs
+                )
+                cls._browser = cls._context.browser
+            except Exception as e:
+                if "user data directory is already in use" in str(e).lower():
+                    raise RuntimeError(f"FATAL: Browser profile at '{BROWSER_PROFILE}' is currently in use by another Chrome window. Please close it and try again.")
+                raise e
         else:
             cls._browser = cls._playwright.chromium.launch(**launch_kwargs)
             cls._context = cls._browser.new_context(
@@ -108,10 +130,33 @@ class BaseExecutor:
             return {}
         return cls.observe_page(page)
 
+    @classmethod
+    def check_for_block(cls) -> tuple[bool, str]:
+        """
+        Observe the page and check for CAPTCHAs or other blocks.
+        """
+        page = cls.get_active_page()
+        if not page:
+            return False, ""
+        
+        dom = cls.observe_page(page)
+        # Capture screenshot for vision analysis
+        shot = cls.capture_screenshot(page, "block_check")
+        return _detector.is_blocked(dom, shot)
+
     @staticmethod
     def observe_page(page: Page, limit: int = MAX_DOM_ELEMENTS) -> dict:
         js = """
         (limit) => {
+          const isVisible = (el) => {
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0 &&
+              style.visibility !== "hidden" && style.display !== "none" &&
+              rect.bottom > 0 && rect.right > 0 &&
+              rect.top < window.innerHeight && rect.left < window.innerWidth;
+          };
+
           const selectorFor = (el) => {
             if (el.id) return `#${CSS.escape(el.id)}`;
             const attrs = ["data-testid", "aria-label", "name", "placeholder", "title"];
@@ -119,16 +164,7 @@ class BaseExecutor:
               const value = el.getAttribute(attr);
               if (value) return `${el.tagName.toLowerCase()}[${attr}="${CSS.escape(value)}"]`;
             }
-            const role = el.getAttribute("role");
-            if (role) return `${el.tagName.toLowerCase()}[role="${CSS.escape(role)}"]`;
             return el.tagName.toLowerCase();
-          };
-
-          const isVisible = (el) => {
-            const rect = el.getBoundingClientRect();
-            const style = window.getComputedStyle(el);
-            return rect.width > 0 && rect.height > 0 &&
-              style.visibility !== "hidden" && style.display !== "none";
           };
 
           const textOf = (el, max = 160) =>
@@ -136,56 +172,59 @@ class BaseExecutor:
              el.getAttribute("placeholder") || el.getAttribute("title") || "")
               .trim().replace(/\\s+/g, " ").slice(0, max);
 
-          const boxOf = (el) => {
-            const rect = el.getBoundingClientRect();
-            return {
-              x: Math.round(rect.x),
-              y: Math.round(rect.y),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height)
-            };
-          };
-
           const itemOf = (el, index) => ({
             index,
             tag: el.tagName.toLowerCase(),
             selector: selectorFor(el),
             role: el.getAttribute("role") || "",
             text: textOf(el, 120),
-            bbox: boxOf(el)
+            bbox: {
+                x: Math.round(el.getBoundingClientRect().x),
+                y: Math.round(el.getBoundingClientRect().y),
+                width: Math.round(el.getBoundingClientRect().width),
+                height: Math.round(el.getBoundingClientRect().height)
+            }
           });
 
+          // 1. Gather all potentially interactive elements
           const candidates = Array.from(document.querySelectorAll(
             'a, button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"], [aria-label], [data-testid]'
-          ));
+          )).filter(isVisible);
+
+          // 2. Score elements by "Importance"
+          // High score for: inputs, buttons with text, elements in center of screen
+          const scored = candidates.map(el => {
+            let score = 0;
+            const tag = el.tagName.toLowerCase();
+            if (tag === 'input' || tag === 'textarea') score += 50;
+            if (tag === 'button' || el.getAttribute('role') === 'button') score += 40;
+            if (textOf(el).length > 2) score += 20;
+            
+            // Proximity to viewport center
+            const rect = el.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const dist = Math.sqrt(Math.pow(centerX - innerWidth/2, 2) + Math.pow(centerY - innerHeight/2, 2));
+            score += Math.max(0, 30 - (dist / 100));
+
+            return { el, score };
+          });
+
+          // Sort by score and take the best ones
+          const prioritized = scored.sort((a, b) => b.score - a.score)
+            .slice(0, limit)
+            .map((item, index) => itemOf(item.el, index));
+
           const headings = Array.from(document.querySelectorAll("h1,h2,h3,[role='heading']"))
-            .filter(isVisible).slice(0, 20).map(itemOf);
-          const landmarks = Array.from(document.querySelectorAll("header,nav,main,aside,footer,section,form,[role='main'],[role='navigation'],[role='banner'],[role='form'],[role='search']"))
-            .filter(isVisible).slice(0, 30).map((el, index) => ({
-              ...itemOf(el, index),
-              childText: textOf(el, 260)
-            }));
-          const forms = Array.from(document.querySelectorAll("form,[role='form'],[role='search']"))
-            .filter(isVisible).slice(0, 12).map((el, index) => ({
-              ...itemOf(el, index),
-              controls: Array.from(el.querySelectorAll("input,textarea,button,[contenteditable='true']"))
-                .filter(isVisible).slice(0, 20).map(itemOf)
-            }));
-          const topSections = Array.from(document.querySelectorAll("header,main,section,[role='main']"))
-            .filter(isVisible)
-            .filter((el) => el.getBoundingClientRect().top < innerHeight * 0.9)
-            .slice(0, 8).map((el, index) => ({
-              ...itemOf(el, index),
-              childText: textOf(el, 500)
-            }));
+            .filter(isVisible).slice(0, 10).map(itemOf);
 
           return {
             title: document.title,
             url: location.href,
             activeElement: selectorFor(document.activeElement),
             viewport: { width: innerWidth, height: innerHeight },
-            appStructure: { headings, landmarks, forms, topSections },
-            elements: candidates.filter(isVisible).slice(0, limit).map(itemOf)
+            appStructure: { headings },
+            elements: prioritized
           };
         }
         """
@@ -270,6 +309,25 @@ class BaseExecutor:
                 best_score = score
         return best
 
+    @staticmethod
+    def _wait_for_stable(page: Page, selector: str, timeout: int = 3000):
+        """Wait for element to stop moving."""
+        try:
+            page.wait_for_selector(selector, state="visible", timeout=timeout)
+            
+            def _get_pos():
+                return page.evaluate("(sel) => document.querySelector(sel).getBoundingClientRect().toJSON()", selector)
+            
+            last_pos = _get_pos()
+            for _ in range(5): # check for 250ms
+                time.sleep(0.05)
+                new_pos = _get_pos()
+                if new_pos['x'] == last_pos['x'] and new_pos['y'] == last_pos['y']:
+                    return
+                last_pos = new_pos
+        except Exception:
+            pass
+
     @classmethod
     def click_resilient(
         cls,
@@ -284,6 +342,7 @@ class BaseExecutor:
 
         for selector in selectors:
             try:
+                cls._wait_for_stable(page, selector)
                 cls.safe_click(page, selector, timeout=timeout)
                 strategy = f"selector:{selector}"
                 cls.record_action_event("click", strategy, labels, selectors, page=page)

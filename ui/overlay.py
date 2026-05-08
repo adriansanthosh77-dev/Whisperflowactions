@@ -34,6 +34,14 @@ STATE_CONFIG = {
     State.ERROR:     {"icon": "✗", "text": "Error",          "color": "#F44336"},
 }
 
+HINTS = [
+    "Hold Ctrl+Space to talk",
+    "Say 'Switch to [Agent]' to swap expert",
+    "Say 'Switch to default' to reset",
+    "Say 'Save agent as [Name]' to create expert",
+    "Press ESC to abort anytime"
+]
+
 
 class Signals(QObject):
     update = pyqtSignal(str, str, str)  # icon, text, color
@@ -45,8 +53,18 @@ class OverlayWindow(QWidget):
         self.signals = Signals()
         self.signals.update.connect(self._apply_update)
         self._init_ui()
+        self._hint_index = 0
+        self._hint_timer = QTimer(self)
+        self._hint_timer.timeout.connect(self._next_hint)
+        self._hint_timer.start(5000) # every 5s
+
+    def _next_hint(self):
+        if self._current_state == State.IDLE:
+            self._hint_index = (self._hint_index + 1) % len(HINTS)
+            self.set_sub_text(HINTS[self._hint_index])
 
     def _init_ui(self):
+        self._current_state = State.IDLE
         self.setWindowFlags(
             Qt.FramelessWindowHint |
             Qt.WindowStaysOnTopHint |
@@ -56,35 +74,37 @@ class OverlayWindow(QWidget):
         self.setStyleSheet("""
             QWidget {
                 background-color: rgba(20, 20, 20, 210);
+                border: 1px solid rgba(255, 255, 255, 0.1);
                 border-radius: 12px;
             }
         """)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(4)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(6)
 
         self.icon_label = QLabel("○")
-        self.icon_label.setFont(QFont("SF Pro", 20))
+        self.icon_label.setFont(QFont("SF Pro Display", 22, QFont.Bold))
         self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setStyleSheet("color: #888888; background: transparent;")
+        self.icon_label.setStyleSheet("color: #888888; background: transparent; border: none;")
 
-        self.text_label = QLabel("JARVIS ready  [Ctrl+Space]")
-        self.text_label.setFont(QFont("SF Mono", 12))
+        self.text_label = QLabel("JARVIS ready")
+        self.text_label.setFont(QFont("SF Pro Text", 13, QFont.Medium))
         self.text_label.setAlignment(Qt.AlignCenter)
-        self.text_label.setStyleSheet("color: #cccccc; background: transparent;")
+        self.text_label.setStyleSheet("color: #ffffff; background: transparent; border: none;")
 
-        self.sub_label = QLabel("")
-        self.sub_label.setFont(QFont("SF Mono", 10))
+        self.sub_label = QLabel(HINTS[0])
+        self.sub_label.setFont(QFont("SF Pro Text", 9))
         self.sub_label.setAlignment(Qt.AlignCenter)
-        self.sub_label.setStyleSheet("color: #888888; background: transparent;")
-        self.sub_label.setMaximumWidth(300)
+        self.sub_label.setStyleSheet("color: #999999; background: transparent; border: none;")
+        self.sub_label.setMaximumWidth(280)
         self.sub_label.setWordWrap(True)
 
         layout.addWidget(self.icon_label)
         layout.addWidget(self.text_label)
         layout.addWidget(self.sub_label)
         self.setLayout(layout)
+        self.setMinimumWidth(220)
         self.adjustSize()
 
         # Position: bottom-right corner
@@ -94,19 +114,26 @@ class OverlayWindow(QWidget):
 
     def _apply_update(self, icon: str, text: str, color: str):
         self.icon_label.setText(icon)
-        self.icon_label.setStyleSheet(f"color: {color}; background: transparent;")
+        self.icon_label.setStyleSheet(f"color: {color}; background: transparent; border: none;")
         self.text_label.setText(text)
         self.adjustSize()
 
     def set_sub_text(self, sub: str):
-        self.sub_label.setText(sub[:60])
+        self.sub_label.setText(sub[:120])
         self.adjustSize()
 
     def update_state(self, state: State, detail: str = ""):
+        self._current_state = state
         cfg = STATE_CONFIG[state]
         self.signals.update.emit(cfg["icon"], cfg["text"], cfg["color"])
+        
+        # If we have a detail, show it. Otherwise if IDLE, show hints.
         if detail:
             QTimer.singleShot(0, lambda: self.set_sub_text(detail))
+        elif state == State.IDLE:
+            QTimer.singleShot(0, lambda: self.set_sub_text(HINTS[self._hint_index]))
+        else:
+            QTimer.singleShot(0, lambda: self.set_sub_text(""))
 
 
 class Overlay:

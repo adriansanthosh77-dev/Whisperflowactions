@@ -42,6 +42,11 @@ class AudioCapture:
             logger.warning("webrtcvad unavailable; using energy-based speech detection.")
         self._pa = pyaudio.PyAudio()
         self._stream: Optional[pyaudio.Stream] = None
+        self._stop_signal = False
+
+    def stop(self):
+        """Signals the recording loop to stop immediately."""
+        self._stop_signal = True
 
     def _open_stream(self) -> pyaudio.Stream:
         return self._pa.open(
@@ -55,8 +60,10 @@ class AudioCapture:
     def record_until_silence(self) -> Optional[bytes]:
         """
         Blocks until speech detected, then records until silence.
+        Can be interrupted by calling .stop() from another thread.
         Returns WAV bytes or None if nothing captured.
         """
+        self._stop_signal = False
         stream = self._open_stream()
         logger.info("Listening for speech...")
 
@@ -67,6 +74,9 @@ class AudioCapture:
 
         try:
             while True:
+                if self._stop_signal:
+                    logger.info("Recording stopped by signal.")
+                    break
                 raw = stream.read(FRAME_SIZE, exception_on_overflow=False)
                 is_speech = self._is_speech(raw)
 

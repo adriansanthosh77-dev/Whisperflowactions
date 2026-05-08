@@ -179,6 +179,14 @@ class BrowserExecutor(BaseExecutor):
                 previous_fingerprints.add(fingerprint)
 
                 action = self._choose_next_action(intent, context, dom, completed_steps, goal)
+                
+                # ── SMART SCROLLING ─────────────────────────────────────────
+                if not action and step_index < max_steps - 1:
+                    logger.info("No action found in current viewport. Scrolling down...")
+                    page.mouse.wheel(0, 500)
+                    time.sleep(0.5)
+                    continue # Try again after scrolling
+
                 if not action:
                     shot = self.capture_screenshot(page, "planner_no_action")
                     return False, f"Planner could not choose next action. screenshot={shot}"
@@ -346,20 +354,110 @@ class BrowserExecutor(BaseExecutor):
         raise RuntimeError(f"Unknown planned action: {kind}")
 
     def _goal_satisfied(self, page, dom: dict, goal: str, expected_text: str) -> bool:
+        """
+        Heuristic + Vision check to see if the task is finished.
+        """
+        # 1. Direct expected text match (Fastest)
         if expected_text:
             try:
                 body = page.inner_text("body", timeout=1000).lower()
-                return expected_text.lower() in body
+                if expected_text.lower() in body:
+                    return True
             except Exception:
-                return False
+                pass
+
+        # 2. Heuristic keyword match (Medium)
         lowered_goal = goal.lower()
-        if any(word in lowered_goal for word in ["send", "sent", "submitted", "created"]):
+        if any(word in lowered_goal for word in ["send", "sent", "submitted", "created", "post"]):
             try:
                 body = page.inner_text("body", timeout=1000).lower()
-                return any(word in body for word in ["sent", "submitted", "created", "success", "done"])
+                if any(word in body for word in ["sent", "submitted", "created", "success", "done", "posted"]):
+                    return True
             except Exception:
-                return False
+                pass
+
+        # 3. Vision-based verification (Most reliable for complex UI changes)
+        if has_valid_openai_key():
+            try:
+                shot_path = self.capture_screenshot(page, "verification")
+                if shot_path:
+                    return self._vision_verify_goal(goal, shot_path)
+            except Exception as e:
+                logger.warning(f"Vision verification failed: {e}")
+
         return False
+
+    def _vision_verify_goal(self, goal: str, screenshot_path: str) -> bool:
+        """
+        Ask GPT-4o-mini vision if the goal is satisfied based on a screenshot.
+        """
+        import base64
+        with open(screenshot_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        try:
+            resp = get_openai_client().chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"The user's goal was: '{goal}'. Based on this screenshot, has this goal been successfully completed? Reply with a JSON object: {{\"satisfied\": true/false, \"reason\": \"...\"}}"},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
+                        ]
+                    }
+                ],
+                max_tokens=100,
+                response_format={"type": "json_object"}
+            )
+            parsed = json.loads(resp.choices[0].message.content or "{}")
+            is_satisfied = bool(parsed.get("satisfied", False))
+            if is_satisfied:
+                logger.info(f"Vision verified goal: {parsed.get('reason', 'Goal satisfied')}")
+            return is_satisfied
+        except Exception as e:
+            logger.warning(f"Vision API error: {e}")
+            return False
+
+    def diagnose_failure(self, goal: str, steps: list[str]) -> str:
+        """
+        Use Vision to explain WHY a browser task failed.
+        """
+        if not has_valid_openai_key():
+            return "Task failed (Vision diagnosis unavailable)."
+            
+        page = self.get_active_page()
+        if not page:
+            return "Task failed (No active browser page)."
+            
+        shot_path = self.capture_screenshot(page, "failure_diagnosis")
+        if not shot_path:
+            return "Task failed (Could not capture screenshot for diagnosis)."
+            
+        import base64
+        with open(shot_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        try:
+            resp = get_openai_client().chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"The browser task failed. Goal: '{goal}'. Steps attempted: {steps}. Based on this screenshot, explain briefly WHY it failed (e.g. button disabled, error message visible, login required)."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
+                        ]
+                    }
+                ],
+                max_tokens=150
+            )
+            diagnosis = resp.choices[0].message.content.strip()
+            logger.info(f"Failure diagnosis: {diagnosis}")
+            return diagnosis
+        except Exception as e:
+            logger.warning(f"Diagnosis API error: {e}")
+            return "Task failed (Diagnosis error)."
 
     def _dom_fingerprint(self, dom: dict) -> str:
         elements = dom.get("elements", [])[:20]
