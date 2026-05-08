@@ -3,6 +3,11 @@ stt_engine.py — Whisper.cpp Speech-to-Text
 
 Writes WAV to temp file, calls whisper-cli subprocess, parses stdout.
 Target latency: <1s on base.en model with CPU.
+
+Supports any language via WHISPER_LANGUAGE env var:
+  - "auto" (default): auto-detect language from audio
+  - "en", "hi", "es", "ar", etc.: force specific language
+  - Use a multilingual model (ggml-base.bin) for non-English
 """
 
 import os
@@ -13,16 +18,24 @@ import tempfile
 from typing import Optional
 from dotenv import load_dotenv
 
+# Use all available cores for whisper.cpp — faster on modern CPUs
+_CPU_THREADS = str(min(os.cpu_count() or 4, 8))
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 WHISPER_BIN = os.getenv("WHISPER_BIN", "whisper-cli")
-WHISPER_MODEL = os.getenv("WHISPER_MODEL_PATH", "models/ggml-base.en.bin")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL_PATH", "models/ggml-base.bin")
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "auto").strip().lower()
 
 
 class STTEngine:
     def __init__(self):
         self._verify_binary()
+        if WHISPER_LANGUAGE == "auto":
+            logger.info("STT language: auto-detect (multilingual model recommended)")
+        else:
+            logger.info(f"STT language: {WHISPER_LANGUAGE}")
 
     def _verify_binary(self):
         result = subprocess.run(
@@ -48,19 +61,25 @@ class STTEngine:
             tmp_path = f.name
 
         try:
+            cmd = [
+                WHISPER_BIN,
+                "-m", WHISPER_MODEL,
+                "-f", tmp_path,
+                "--no-timestamps",
+                "--output-txt",
+                "-t", _CPU_THREADS,  # all available cores
+            ]
+
+            # Language: "auto" omits the flag (whisper.cpp auto-detects)
+            # Any other value (en, hi, es, ar, zh, etc.) pins the language
+            if WHISPER_LANGUAGE != "auto":
+                cmd.extend(["-l", WHISPER_LANGUAGE])
+
             result = subprocess.run(
-                [
-                    WHISPER_BIN,
-                    "-m", WHISPER_MODEL,
-                    "-f", tmp_path,
-                    "-l", "en",
-                    "--no-timestamps",
-                    "--output-txt",
-                    "-t", "4",          # 4 CPU threads
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
-                timeout=10,            # hard timeout
+                timeout=8,             # tighter timeout (was 10s)
             )
 
             elapsed = time.time() - start
@@ -79,7 +98,7 @@ class STTEngine:
             return text
 
         except subprocess.TimeoutExpired:
-            logger.error("Whisper timed out after 10s")
+            logger.error("Whisper timed out after 8s")
             return None
         finally:
             os.unlink(tmp_path)
@@ -114,11 +133,13 @@ class STTEngineAPI:
         try:
             audio_file = io.BytesIO(wav_bytes)
             audio_file.name = "audio.wav"
-            result = self.client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="en",
-            )
+
+            # Use language setting; "auto" → omit language param for auto-detect
+            kwargs = {"model": "whisper-1", "file": audio_file}
+            if WHISPER_LANGUAGE != "auto":
+                kwargs["language"] = WHISPER_LANGUAGE
+
+            result = self.client.audio.transcriptions.create(**kwargs)
             elapsed = time.time() - start
             logger.info(f"API STT completed in {elapsed:.2f}s: '{result.text}'")
             return result.text.strip() or None

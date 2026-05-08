@@ -96,21 +96,33 @@ class JARVISOrchestrator:
             t_audio = time.time()
             logger.info(f"Audio captured in {t_audio - t_start:.2f}s")
 
-            # 2. Speech to text
-            self.overlay.set_state(State.THINKING, "Transcribing...")
+            # 2. Parallel STT and Context Collection
+            self.overlay.set_state(State.THINKING, "Processing...")
+            
+            # Start context collection in parallel with transcription
+            # This saves ~200-500ms depending on DOM complexity
+            ctx_container = {"ctx": None}
+            def _collect():
+                c = self.context.collect()
+                c.learning_hints = self.feedback.get_learning_hints()
+                ctx_container["ctx"] = c
+            
+            ctx_thread = threading.Thread(target=_collect)
+            ctx_thread.start()
+
             text = self.stt.transcribe(wav_bytes)
+            ctx_thread.join()
+            ctx = ctx_container["ctx"]
+
+            t_stt = time.time()
             if not text:
-                self.overlay.set_state(State.ERROR, "Couldn't understand audio")
-                time.sleep(1.5)
+                logger.info(f"STT finished (no text) in {t_stt - t_audio:.2f}s")
+                self.overlay.set_state(State.ERROR, "No speech detected")
+                time.sleep(1.2)
                 self.overlay.set_state(State.IDLE)
                 return
 
-            t_stt = time.time()
-            logger.info(f"STT done in {t_stt - t_audio:.2f}s → '{text}'")
-
-            # 3. Collect context (parallel to intent parsing)
-            ctx = self.context.collect()
-            ctx.learning_hints = self.feedback.get_learning_hints()
+            logger.info(f"STT + Context done in {t_stt - t_audio:.2f}s → '{text}'")
 
             # 4. Parse intent
             self.overlay.set_state(State.THINKING, "Parsing intent...")

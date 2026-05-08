@@ -30,47 +30,23 @@ def has_valid_openai_key() -> bool:
     key = os.getenv("OPENAI_API_KEY", "").strip()
     return bool(key and key != "sk-..." and not key.endswith("..."))
 
-SYSTEM_PROMPT = """You are an intent classification engine for a voice assistant that controls Chrome browser apps.
+SYSTEM_PROMPT = """Intent classifier for a voice assistant controlling Chrome. Return strict JSON only.
 
-Extract structured intent from the user's voice command. Always return valid JSON only — no prose, no markdown.
+INTENTS: send_message | summarize | reply_professionally | create_task | open_app | browser_action | unknown
+APPS: whatsapp | gmail | notion | browser | unknown
 
-SUPPORTED INTENTS:
-- send_message: send a message via WhatsApp or Gmail
-- summarize: summarize current page, email thread, or selected text
-- reply_professionally: compose a professional reply to an email
-- create_task: create a task/note in Notion
-- open_app: open or switch to a browser app (whatsapp, gmail, notion)
-- browser_action: click, type, press a key, or complete a bounded multi-step browser task using DOM/mouse state
-- unknown: when the command doesn't map to any supported intent
+JSON FORMAT:
+{"intent":"...","app":"...","target":"...","data":{...},"confidence":0.0}
 
-SUPPORTED APPS: whatsapp, gmail, notion, browser, unknown
-
-OUTPUT FORMAT (strict JSON):
-{
-  "intent": "<one of the intents above>",
-  "app": "<one of the apps above>",
-  "target": "<contact name | page | task title | app name | empty string>",
-  "data": {<intent-specific payload>},
-  "confidence": <0.0 to 1.0>
-}
-
-DATA PAYLOADS BY INTENT:
-- send_message: {"message": "text to send"}
-- summarize: {"style": "bullet|paragraph"} 
-- reply_professionally: {"tone": "formal|friendly", "key_points": ["..."]}
-- create_task: {"title": "...", "description": "...", "due": "...or empty"}
+DATA by intent:
+- send_message: {"message":"text"}
+- summarize: {"style":"bullet|paragraph"}
+- reply_professionally: {"tone":"formal|friendly","key_points":["..."]}
+- create_task: {"title":"...","description":"...","due":""}
 - open_app: {}
-- browser_action: {"goal": "what should be accomplished", "action": "click|type|press|auto", "selector": "...or empty", "text": "...or empty", "key": "...or empty", "labels": ["..."], "expected_text": "...or empty", "max_steps": 6}
+- browser_action: {"goal":"...","action":"click|type|press|auto","selector":"","text":"","key":"","labels":["..."],"expected_text":"","max_steps":6}
 
-RULES:
-- If app is ambiguous and selected_text or URL is provided, infer from context.
-- Prefer DOM selectors from context.dom.elements over visual/screenshot descriptions.
-- For click actions, use selector when a matching DOM element is available; use x/y only when the user explicitly refers to mouse position.
-- For type actions, put the typed content in data.text and the destination selector in data.selector when known.
-- For multi-step browser tasks, set action to "auto", describe the goal, and include expected_text when completion can be verified from page text.
-- For WhatsApp messages: extract recipient name from "tell X" / "message X" / "send X".
-- Confidence below 0.6 → set intent to "unknown".
-- Never hallucinate recipients or content not in the command.
+RULES: Infer app from URL/context if ambiguous. Use DOM selectors when available. Confidence<0.6 → unknown. Never hallucinate content.
 """
 
 
@@ -81,25 +57,26 @@ def build_user_message(text: str, context: Context) -> str:
     if context.url:
         ctx_parts.append(f"url: {context.url}")
     if context.selected_text:
-        ctx_parts.append(f"selected_text: {context.selected_text[:500]}")
+        ctx_parts.append(f"selected_text: {context.selected_text[:300]}")
     if context.clipboard:
-        ctx_parts.append(f"clipboard: {context.clipboard[:200]}")
-    if context.mouse:
-        ctx_parts.append(f"mouse: {json.dumps(context.mouse)[:200]}")
+        ctx_parts.append(f"clipboard: {context.clipboard[:150]}")
     if context.dom:
+        # Send only the bare minimum DOM needed for grounding
         dom_summary = {
             "title": context.dom.get("title", ""),
             "url": context.dom.get("url", ""),
             "activeElement": context.dom.get("activeElement", ""),
-            "appStructure": context.dom.get("appStructure", {}),
-            "elements": context.dom.get("elements", [])[:25],
+            # Only headings + forms — skip landmarks/topSections for speed
+            "headings": context.dom.get("appStructure", {}).get("headings", [])[:6],
+            "forms": context.dom.get("appStructure", {}).get("forms", [])[:3],
+            "elements": context.dom.get("elements", [])[:15],  # was 25
         }
-        ctx_parts.append(f"dom: {json.dumps(dom_summary)[:5000]}")
+        ctx_parts.append(f"dom: {json.dumps(dom_summary)[:2500]}")
     if context.learning_hints:
-        ctx_parts.append("learning_hints:\n" + "\n".join(f"- {h}" for h in context.learning_hints[:8]))
+        ctx_parts.append("hints:\n" + "\n".join(f"- {h}" for h in context.learning_hints[:5]))
 
     ctx_str = "\n".join(ctx_parts) if ctx_parts else "none"
-    return f"Voice command: {text}\n\nContext:\n{ctx_str}"
+    return f"Command: {text}\nContext:\n{ctx_str}"
 
 
 class IntentParser:
@@ -118,8 +95,8 @@ class IntentParser:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": build_user_message(text, context)},
                 ],
-                max_tokens=300,
-                temperature=0.1,  # low temp for deterministic JSON
+                max_tokens=200,   # intent JSON is always short
+                temperature=0.0,  # fully deterministic
                 response_format={"type": "json_object"},
             )
 

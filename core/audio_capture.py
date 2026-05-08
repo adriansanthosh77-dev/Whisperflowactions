@@ -27,9 +27,9 @@ FRAME_DURATION_MS = 30  # 10, 20, or 30 ms frames for webrtcvad
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)  # samples per frame
 
 # Silence detection config
-SILENCE_THRESHOLD_FRAMES = 30   # ~900ms of silence → stop recording
-MAX_RECORDING_FRAMES = 300      # max ~9s of audio
-MIN_SPEECH_FRAMES = 5           # ignore sub-150ms noises
+SILENCE_THRESHOLD_FRAMES = 16   # ~500ms of silence → stop recording (was 900ms)
+MAX_RECORDING_FRAMES = 200      # max ~6s of audio (was 9s)
+MIN_SPEECH_FRAMES = 3           # ignore sub-90ms noises (was 150ms)
 
 
 class AudioCapture:

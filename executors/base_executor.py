@@ -20,7 +20,7 @@ RECORD_VIDEO_DIR = os.getenv("RECORD_VIDEO_DIR", "").strip()
 RECORD_TRACE_DIR = os.getenv("RECORD_TRACE_DIR", "").strip()
 DEFAULT_TIMEOUT_MS = 8000
 MAX_RETRIES = 3
-MAX_DOM_ELEMENTS = 80
+MAX_DOM_ELEMENTS = 40   # intent parser only uses 15; no need to scrape 80
 SCREENSHOT_DIR = Path("data/screenshots")
 
 
