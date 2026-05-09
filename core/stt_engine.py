@@ -25,7 +25,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 WHISPER_BIN = os.getenv("WHISPER_BIN", "whisper-cli")
-WHISPER_MODEL = os.getenv("WHISPER_MODEL_PATH", "models/ggml-base.bin")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL_PATH", "models/ggml-base.en.bin")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "auto").strip().lower()
 
 
@@ -124,25 +124,30 @@ class STTEngineAPI:
     """Use this as fallback during dev if whisper.cpp isn't installed."""
 
     def __init__(self):
-        import openai
-        self.client = openai.OpenAI()
+        self.api_key = os.getenv("OPENAI_API_KEY")
 
     def transcribe(self, wav_bytes: bytes) -> Optional[str]:
         import io
+        import requests
         start = time.time()
         try:
-            audio_file = io.BytesIO(wav_bytes)
-            audio_file.name = "audio.wav"
-
-            # Use language setting; "auto" → omit language param for auto-detect
-            kwargs = {"model": "whisper-1", "file": audio_file}
+            url = "https://api.openai.com/v1/audio/transcriptions"
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            
+            files = {
+                "file": ("audio.wav", wav_bytes, "audio/wav"),
+                "model": (None, "whisper-1"),
+            }
             if WHISPER_LANGUAGE != "auto":
-                kwargs["language"] = WHISPER_LANGUAGE
+                files["language"] = (None, WHISPER_LANGUAGE)
 
-            result = self.client.audio.transcriptions.create(**kwargs)
+            resp = requests.post(url, headers=headers, files=files, timeout=15)
+            resp.raise_for_status()
+            
+            text = resp.json().get("text", "").strip()
             elapsed = time.time() - start
-            logger.info(f"API STT completed in {elapsed:.2f}s: '{result.text}'")
-            return result.text.strip() or None
+            logger.info(f"API STT completed in {elapsed:.2f}s: '{text}'")
+            return text or None
         except Exception as e:
             logger.error(f"OpenAI Whisper API error: {e}")
             return None
@@ -152,6 +157,6 @@ def get_stt_engine():
     """Returns local engine if available, falls back to API."""
     try:
         return STTEngine()
-    except RuntimeError as e:
+    except Exception as e:
         logger.warning(f"Local Whisper unavailable ({e}), falling back to API.")
         return STTEngineAPI()

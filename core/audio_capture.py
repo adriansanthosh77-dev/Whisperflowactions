@@ -1,15 +1,16 @@
 """
 audio_capture.py — Microphone input with Voice Activity Detection (VAD)
 
+Uses sounddevice (alternative to PyAudio) for better compatibility with Python 3.12+.
 Listens until silence, then returns raw PCM audio bytes.
-Uses webrtcvad to detect speech vs silence (no fixed duration).
 """
 
 import io
 import wave
 import logging
-import pyaudio
-import numpy as np
+import math
+import array
+import sounddevice as sd
 from typing import Optional
 
 try:
@@ -26,45 +27,24 @@ SAMPLE_WIDTH = 2        # 16-bit PCM
 FRAME_DURATION_MS = 30  # 10, 20, or 30 ms frames for webrtcvad
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)  # samples per frame
 
-# Silence detection config
-SILENCE_THRESHOLD_FRAMES = 16   # ~500ms of silence → stop recording (was 900ms)
-MAX_RECORDING_FRAMES = 200      # max ~6s of audio (was 9s)
-MIN_SPEECH_FRAMES = 3           # ignore sub-90ms noises (was 150ms)
+# Silence detection config (Optimized for speed)
+SILENCE_THRESHOLD_FRAMES = 12   # ~360ms of silence → stop recording (was 16)
+MAX_RECORDING_FRAMES = 300      # max ~9s of audio
+MIN_SPEECH_FRAMES = 2           # ignore sub-60ms noises (was 3)
 
 
 class AudioCapture:
     def __init__(self, vad_aggressiveness: int = 2):
-        """
-        vad_aggressiveness: 0–3 (3 = most aggressive noise rejection)
-        """
         self.vad = webrtcvad.Vad(vad_aggressiveness) if webrtcvad else None
         if not self.vad:
             logger.warning("webrtcvad unavailable; using energy-based speech detection.")
-        self._pa = pyaudio.PyAudio()
-        self._stream: Optional[pyaudio.Stream] = None
         self._stop_signal = False
 
     def stop(self):
-        """Signals the recording loop to stop immediately."""
         self._stop_signal = True
 
-    def _open_stream(self) -> pyaudio.Stream:
-        return self._pa.open(
-            format=pyaudio.paInt16,
-            channels=CHANNELS,
-            rate=SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=FRAME_SIZE,
-        )
-
     def record_until_silence(self) -> Optional[bytes]:
-        """
-        Blocks until speech detected, then records until silence.
-        Can be interrupted by calling .stop() from another thread.
-        Returns WAV bytes or None if nothing captured.
-        """
         self._stop_signal = False
-        stream = self._open_stream()
         logger.info("Listening for speech...")
 
         frames = []
@@ -72,33 +52,37 @@ class AudioCapture:
         speech_started = False
         speech_frame_count = 0
 
+        # We'll use a generator to read frames from the input stream
         try:
-            while True:
-                if self._stop_signal:
-                    logger.info("Recording stopped by signal.")
-                    break
-                raw = stream.read(FRAME_SIZE, exception_on_overflow=False)
-                is_speech = self._is_speech(raw)
-
-                if is_speech:
-                    frames.append(raw)
-                    speech_started = True
-                    silence_count = 0
-                    speech_frame_count += 1
-                elif speech_started:
-                    frames.append(raw)  # include trailing silence in audio
-                    silence_count += 1
-                    if silence_count >= SILENCE_THRESHOLD_FRAMES:
+            with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SIZE, 
+                                   device=None, channels=CHANNELS, dtype='int16') as stream:
+                while True:
+                    if self._stop_signal:
+                        logger.info("Recording stopped by signal.")
                         break
-                # else: pre-speech silence, ignore
+                    
+                    raw, overflowed = stream.read(FRAME_SIZE)
+                    # raw is a buffer/bytes object
+                    is_speech = self._is_speech(bytes(raw))
 
-                if len(frames) >= MAX_RECORDING_FRAMES:
-                    logger.warning("Max recording duration reached.")
-                    break
+                    if is_speech:
+                        frames.append(bytes(raw))
+                        speech_started = True
+                        silence_count = 0
+                        speech_frame_count += 1
+                    elif speech_started:
+                        frames.append(bytes(raw))
+                        silence_count += 1
+                        if silence_count >= SILENCE_THRESHOLD_FRAMES:
+                            break
 
-        finally:
-            stream.stop_stream()
-            stream.close()
+                    if len(frames) >= MAX_RECORDING_FRAMES:
+                        logger.warning("Max recording duration reached.")
+                        break
+
+        except Exception as e:
+            logger.error(f"Microphone error: {e}")
+            return None
 
         if speech_frame_count < MIN_SPEECH_FRAMES:
             logger.info("No meaningful speech detected.")
@@ -109,10 +93,11 @@ class AudioCapture:
 
     def _is_speech(self, raw_pcm: bytes) -> bool:
         if not self.vad:
-            samples = np.frombuffer(raw_pcm, dtype=np.int16)
-            if samples.size == 0:
-                return False
-            rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+            # Simple RMS energy detection in pure Python
+            shorts = array.array('h', raw_pcm)
+            if not shorts: return False
+            sum_sq = sum(float(s)**2 for s in shorts)
+            rms = math.sqrt(sum_sq / len(shorts))
             return rms > 450
         try:
             return self.vad.is_speech(raw_pcm, SAMPLE_RATE)
@@ -129,4 +114,5 @@ class AudioCapture:
         return buf.getvalue()
 
     def cleanup(self):
-        self._pa.terminate()
+        # sounddevice doesn't need explicit cleanup like PyAudio
+        pass

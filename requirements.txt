@@ -1,10 +1,12 @@
-openai>=1.30.0
-playwright>=1.44.0
-pyaudio>=0.2.14
+# Core JARVIS Requirements (Python 3.14 compatible)
+# Removed: openai, playwright, pydantic, numpy, PyQt5 (due to 3.14 stability)
+
+sounddevice>=0.5.0
 pynput>=1.7.6
-PyQt5>=5.15.10
-pydantic>=2.7.0
 python-dotenv>=1.0.1
 requests>=2.31.0
-numpy>=1.26.0
 pyperclip>=1.8.2
+pygame>=2.5.2
+websockets>=12.0
+# pyttsx3 is optional now (has PowerShell fallback)
+# webrtcvad is optional now (has RMS fallback)

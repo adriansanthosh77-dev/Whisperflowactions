@@ -21,7 +21,6 @@ import time
 import logging
 import requests
 from typing import Generator, Optional
-from openai import OpenAI
 from dotenv import load_dotenv
 from models.intent_schema import IntentResult, Context
 
@@ -33,14 +32,6 @@ LLM_PROVIDER    = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
 OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "llama3").strip()
 OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
-
-_openai_client: Optional[OpenAI] = None
-
-def _get_openai_client() -> OpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    return _openai_client
 
 def _has_openai_key() -> bool:
     key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -180,31 +171,54 @@ def _stream_plan_openai(text: str, context: Context, prompt: str = PLANNER_PROMP
             "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "low"}
         })
 
-    stream = _get_openai_client().chat.completions.create(
-        model=model,
-        messages=[
+    payload = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": prompt},
             {"role": "user",   "content": content},
         ],
-        max_tokens=500,
-        temperature=0.0,
+        "max_tokens": 500,
+        "temperature": 0.0,
+        "stream": True,
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+        "Content-Type": "application/json"
+    }
+
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        json=payload,
         stream=True,
+        timeout=30
     )
+    resp.raise_for_status()
 
     buffer = ""
     yielded = 0
 
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content or ""
-        buffer += delta
+    for line in resp.iter_lines():
+        if not line: continue
+        line_str = line.decode("utf-8").strip()
+        if line_str == "data: [DONE]": break
+        if not line_str.startswith("data: "): continue
+        
+        try:
+            chunk = json.loads(line_str[6:])
+            delta = chunk["choices"][0]["delta"].get("content", "")
+            buffer += delta
 
-        objects = _extract_json_objects(buffer)
-        while len(objects) > yielded:
-            step_dict = objects[yielded]
-            yielded += 1
-            step = _parse_step(step_dict)
-            logger.info(f"Plan step {yielded}: {step.intent} → {step.app} [{step.target}]")
-            yield step
+            objects = _extract_json_objects(buffer)
+            while len(objects) > yielded:
+                step_dict = objects[yielded]
+                yielded += 1
+                step = _parse_step(step_dict)
+                logger.info(f"Plan step {yielded}: {step.intent} → {step.app} [{step.target}]")
+                yield step
+        except Exception:
+            continue
 
 
 # ── Ollama planner (non-streaming fallback) ───────────────────────────────
@@ -216,6 +230,8 @@ def _plan_ollama(text: str, context: Context) -> Generator[IntentResult, None, N
     the full response then yield steps quickly.
     """
     user_msg = _build_user_message(text, context)
+    
+    # ── MULTIMODAL PLANNING (Ollama) ────────────────────────────────────
     payload = {
         "model": OLLAMA_MODEL,
         "messages": [
@@ -225,7 +241,18 @@ def _plan_ollama(text: str, context: Context) -> Generator[IntentResult, None, N
         "stream": False,
         "options": {"temperature": 0.0, "num_predict": 400},
     }
-    resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=15)
+
+    # If model is vision-capable and we have a screenshot, attach it
+    shot_path = context.dom.get("screenshot") if context.dom else None
+    if "vision" in OLLAMA_MODEL.lower() and shot_path and os.path.exists(shot_path):
+        import base64
+        with open(shot_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        # Ollama expects 'images' field at the message level or root depending on API version
+        # For /api/chat, it's typically inside the message
+        payload["messages"][-1]["images"] = [img_b64]
+
+    resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=25)
     resp.raise_for_status()
 
     content = resp.json().get("message", {}).get("content", "")

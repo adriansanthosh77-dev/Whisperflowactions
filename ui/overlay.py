@@ -1,20 +1,15 @@
 """
-overlay.py — Floating HUD overlay using PyQt5.
-
-Shows:  ● Listening...  |  🔍 Intent detected  |  ✓ Done  |  ✗ Error
-
-Runs in its own thread. Main thread calls update_state() to change display.
+overlay.py — Floating HUD overlay using Tkinter (Zero-Dependency).
+Supports Voice HUD and Text Input Prompt.
 """
 
-import sys
+import tkinter as tk
 import threading
+import queue
+import logging
 from enum import Enum
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt5.QtGui import QFont, QColor
 
-app: QApplication = None
-
+logger = logging.getLogger(__name__)
 
 class State(Enum):
     IDLE      = "idle"
@@ -23,7 +18,6 @@ class State(Enum):
     EXECUTING = "executing"
     SUCCESS   = "success"
     ERROR     = "error"
-
 
 STATE_CONFIG = {
     State.IDLE:      {"icon": "○", "text": "JARVIS ready",   "color": "#888888"},
@@ -34,140 +28,93 @@ STATE_CONFIG = {
     State.ERROR:     {"icon": "✗", "text": "Error",          "color": "#F44336"},
 }
 
-HINTS = [
-    "Hold Ctrl+Space to talk",
-    "Say 'Switch to [Agent]' to swap expert",
-    "Say 'Switch to default' to reset",
-    "Say 'Save agent as [Name]' to create expert",
-    "Press ESC to abort anytime"
-]
-
-
-class Signals(QObject):
-    update = pyqtSignal(str, str, str)  # icon, text, color
-
-
-class OverlayWindow(QWidget):
+class OverlayWindow:
     def __init__(self):
-        super().__init__()
-        self.signals = Signals()
-        self.signals.update.connect(self._apply_update)
-        self._init_ui()
-        self._hint_index = 0
-        self._hint_timer = QTimer(self)
-        self._hint_timer.timeout.connect(self._next_hint)
-        self._hint_timer.start(5000) # every 5s
+        self.root = tk.Tk()
+        self.root.title("JARVIS HUD")
+        self.root.overrideredirect(True) 
+        self.root.attributes("-topmost", True)
+        self.root.attributes("-transparentcolor", "#121212")
+        self.root.configure(bg="#121212")
 
-    def _next_hint(self):
-        if self._current_state == State.IDLE:
-            self._hint_index = (self._hint_index + 1) % len(HINTS)
-            self.set_sub_text(HINTS[self._hint_index])
+        # Container
+        self.frame = tk.Frame(self.root, bg="#1a1a1a", bd=1, highlightbackground="#333", highlightthickness=1)
+        self.frame.pack(padx=10, pady=10, fill="both", expand=True)
 
-    def _init_ui(self):
-        self._current_state = State.IDLE
-        self.setWindowFlags(
-            Qt.FramelessWindowHint |
-            Qt.WindowStaysOnTopHint |
-            Qt.Tool
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet("""
-            QWidget {
-                background-color: rgba(20, 20, 20, 210);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 12px;
-            }
-        """)
+        self.icon_label = tk.Label(self.frame, text="○", font=("Segoe UI", 24, "bold"), fg="#888", bg="#1a1a1a")
+        self.icon_label.pack(pady=(5, 0))
 
-        layout = QVBoxLayout()
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(6)
+        self.text_label = tk.Label(self.frame, text="JARVIS ready", font=("Segoe UI", 12, "bold"), fg="#fff", bg="#1a1a1a")
+        self.text_label.pack(pady=2)
 
-        self.icon_label = QLabel("○")
-        self.icon_label.setFont(QFont("SF Pro Display", 22, QFont.Bold))
-        self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setStyleSheet("color: #888888; background: transparent; border: none;")
+        self.sub_label = tk.Label(self.frame, text="Ctrl+Space: Voice | Ctrl+Shift+Space: Text", font=("Segoe UI", 8), fg="#666", bg="#1a1a1a")
+        self.sub_label.pack(pady=(0, 5))
 
-        self.text_label = QLabel("JARVIS ready")
-        self.text_label.setFont(QFont("SF Pro Text", 13, QFont.Medium))
-        self.text_label.setAlignment(Qt.AlignCenter)
-        self.text_label.setStyleSheet("color: #ffffff; background: transparent; border: none;")
-
-        self.sub_label = QLabel(HINTS[0])
-        self.sub_label.setFont(QFont("SF Pro Text", 9))
-        self.sub_label.setAlignment(Qt.AlignCenter)
-        self.sub_label.setStyleSheet("color: #999999; background: transparent; border: none;")
-        self.sub_label.setMaximumWidth(280)
-        self.sub_label.setWordWrap(True)
-
-        layout.addWidget(self.icon_label)
-        layout.addWidget(self.text_label)
-        layout.addWidget(self.sub_label)
-        self.setLayout(layout)
-        self.setMinimumWidth(220)
-        self.adjustSize()
-
-        # Position: bottom-right corner
-        from PyQt5.QtWidgets import QDesktopWidget
-        screen = QDesktopWidget().screenGeometry()
-        self.move(screen.width() - self.width() - 30, screen.height() - self.height() - 80)
-
-    def _apply_update(self, icon: str, text: str, color: str):
-        self.icon_label.setText(icon)
-        self.icon_label.setStyleSheet(f"color: {color}; background: transparent; border: none;")
-        self.text_label.setText(text)
-        self.adjustSize()
-
-    def set_sub_text(self, sub: str):
-        self.sub_label.setText(sub[:120])
-        self.adjustSize()
+        self.w, self.h = 240, 120
+        self.sw = self.root.winfo_screenwidth()
+        self.sh = self.root.winfo_screenheight()
+        self.root.geometry(f"{self.w}x{self.h}+{self.sw-self.w-30}+{sh-h-80}" if 'sh' in locals() else f"{self.w}x{self.h}+{self.sw-self.w-30}+{self.root.winfo_screenheight()-self.h-80}")
 
     def update_state(self, state: State, detail: str = ""):
-        self._current_state = state
         cfg = STATE_CONFIG[state]
-        self.signals.update.emit(cfg["icon"], cfg["text"], cfg["color"])
-        
-        # If we have a detail, show it. Otherwise if IDLE, show hints.
+        self.icon_label.config(text=cfg["icon"], fg=cfg["color"])
+        self.text_label.config(text=cfg["text"])
         if detail:
-            QTimer.singleShot(0, lambda: self.set_sub_text(detail))
-        elif state == State.IDLE:
-            QTimer.singleShot(0, lambda: self.set_sub_text(HINTS[self._hint_index]))
+            self.sub_label.config(text=detail[:45], fg="#aaa")
         else:
-            QTimer.singleShot(0, lambda: self.set_sub_text(""))
+            self.sub_label.config(text="Ctrl+Space: Voice | Ctrl+Shift+Space: Text", fg="#666")
 
+    def prompt_text(self) -> str:
+        result = {"text": None}
+        dialog = tk.Toplevel(self.root)
+        dialog.overrideredirect(True)
+        dialog.attributes("-topmost", True)
+        dialog.configure(bg="#1a1a1a", bd=2, highlightbackground="#4CAF50", highlightthickness=1)
+        
+        dw, dh = 450, 80
+        dialog.geometry(f"{dw}x{dh}+{(self.sw-dw)//2}+{(self.root.winfo_screenheight()-dh)//2}")
+        
+        lbl = tk.Label(dialog, text="Command JARVIS:", font=("Segoe UI", 10, "bold"), fg="#4CAF50", bg="#1a1a1a")
+        lbl.pack(pady=(10, 2), padx=10, anchor="w")
+        
+        entry = tk.Entry(dialog, font=("Segoe UI", 12), bg="#222", fg="#fff", insertbackground="#fff", bd=0, highlightthickness=1, highlightbackground="#444")
+        entry.pack(fill="x", padx=10, pady=5)
+        entry.focus_set()
+        
+        def _submit(event=None):
+            result["text"] = entry.get()
+            dialog.destroy()
+        def _cancel(event=None):
+            dialog.destroy()
+
+        entry.bind("<Return>", _submit)
+        entry.bind("<Escape>", _cancel)
+        self.root.wait_window(dialog)
+        return result["text"]
 
 class Overlay:
-    """Thread-safe wrapper. Call from any thread."""
-
     def __init__(self):
-        global app
-        if not QApplication.instance():
-            app = QApplication(sys.argv)
-        else:
-            app = QApplication.instance()
-        self.window = OverlayWindow()
-        self.window.show()
-
-    def set_state(self, state: State, detail: str = ""):
-        self.window.update_state(state, detail)
+        self.window = None
+        self._ready = threading.Event()
 
     def run(self):
-        """Block — call from main thread (or dedicated Qt thread)."""
-        app.exec_()
+        self.window = OverlayWindow()
+        self._ready.set()
+        self.window.root.mainloop()
 
+    def set_state(self, state: State, detail: str = ""):
+        if self.window:
+            self.window.root.after(0, lambda: self.window.update_state(state, detail))
+
+    def prompt_text(self) -> str:
+        if not self.window: return None
+        q = queue.Queue()
+        self.window.root.after(0, lambda: q.put(self.window.prompt_text()))
+        return q.get()
 
 def run_overlay_in_thread() -> Overlay:
-    """Launch overlay in a background thread. Returns overlay handle."""
-    overlay = None
-    ready = threading.Event()
-
-    def _run():
-        nonlocal overlay
-        overlay = Overlay()
-        ready.set()
-        overlay.run()
-
-    t = threading.Thread(target=_run, daemon=True)
+    overlay = Overlay()
+    t = threading.Thread(target=overlay.run, daemon=True)
     t.start()
-    ready.wait(timeout=5)
+    overlay._ready.wait(timeout=5)
     return overlay

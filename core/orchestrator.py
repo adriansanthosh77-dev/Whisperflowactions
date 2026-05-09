@@ -19,7 +19,11 @@ import logging
 import threading
 from pathlib import Path
 from dotenv import load_dotenv
-from pynput import keyboard
+try:
+    from pynput import keyboard
+    HAS_PYNPUT = True
+except ImportError:
+    HAS_PYNPUT = False
 
 # ── Adjust path for imports ──────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -90,11 +94,33 @@ class JARVISOrchestrator:
             self._abort_flag = False
         threading.Thread(target=self._run_pipeline, daemon=True).start()
 
+    def _on_text_hotkey(self):
+        """Triggers a text input prompt on the HUD."""
+        with self._lock:
+            if self._listening:
+                return
+        
+        def _get_and_run():
+            text = self.overlay.prompt_text()
+            if text:
+                self._run_pipeline_text(text)
+        
+        threading.Thread(target=_get_and_run, daemon=True).start()
+
     # ── Main pipeline ─────────────────────────────────────────────────────
+
+    def _run_pipeline_text(self, text: str):
+        """Entry point for Terminal Mode (typed text)."""
+        BaseExecutor.reset_abort_signal()
+        self.overlay.set_state(State.THINKING, "Collecting context...")
+        ctx = self.context.collect()
+        ctx.learning_hints = self.feedback.get_learning_hints()
+        ctx.history = self._history[-5:]
+        self._execute_text(text, ctx)
 
     def _run_pipeline(self):
         t_start = time.time()
-        BaseExecutor.reset_abort_signal() # Reset browser abort signal
+        BaseExecutor.reset_abort_signal()
         try:
             # ── 1. Capture audio ─────────────────────────────────────────
             self.overlay.set_state(State.LISTENING)
@@ -119,7 +145,7 @@ class JARVISOrchestrator:
             def _collect():
                 c = self.context.collect()
                 c.learning_hints = self.feedback.get_learning_hints()
-                c.history = self._history[-5:] # Only send last 5 interactions
+                c.history = self._history[-5:]
                 ctx_container["ctx"] = c
 
             ctx_thread = threading.Thread(target=_collect, daemon=True)
@@ -140,174 +166,103 @@ class JARVISOrchestrator:
                 return
 
             logger.info(f"STT + Context ready in {t_parallel - t_audio:.2f}s → '{text}'")
-
-            # ── 3. Streaming plan execution ──────────────────────────────
-            self.overlay.set_state(State.THINKING, "Planning...")
-
-            # ── INTERCEPT: Save/Load Agent Commands ──────────────────────
-            lower_text = text.lower()
-            if "save this agent as" in lower_text:
-                agent_name = lower_text.split("save this agent as")[-1].strip()
-                if agent_name:
-                    self.agents.save_agent(agent_name, self.planner.custom_system_prompt or self.planner.PLANNER_PROMPT)
-                    msg = f"Agent {agent_name} saved successfully."
-                    self.overlay.set_state(State.SUCCESS, msg)
-                    self.tts.say(msg)
-                    time.sleep(1.5); self.overlay.set_state(State.IDLE); return
-
-            if "switch to" in lower_text or "load" in lower_text:
-                # Find agent name: "switch to research expert" -> "research expert"
-                parts = lower_text.split("switch to") if "switch to" in lower_text else lower_text.split("load")
-                agent_name = parts[-1].strip().replace(" agent", "")
-                
-                if "default" in agent_name:
-                    self.planner.set_persona(None)
-                    msg = "Switched to default JARVIS persona."
-                else:
-                    config = self.agents.load_agent(agent_name)
-                    if config:
-                        self.planner.set_persona(config.get("system_prompt"))
-                        msg = f"Agent {agent_name} loaded. I am ready."
-                    else:
-                        msg = f"I couldn't find an agent named {agent_name}."
-                
-                self.overlay.set_state(State.SUCCESS, msg)
-                self.tts.say(msg)
-                time.sleep(1.5); self.overlay.set_state(State.IDLE); return
-
-            step_num = 0
-            overall_success = True
-
-            for step in self.planner.plan(text, ctx):
-                if self._abort_flag: 
-                    self.overlay.set_state(State.IDLE, "Aborted")
-                    self.tts.say("Task aborted.")
-                    break
-                step_num += 1
-
-                if step.intent == "unknown" or step.confidence < 0.5:
-                    self.feedback.log(step, False, "Unknown intent", context=ctx)
-                    self.overlay.set_state(State.ERROR, f"Step {step_num}: couldn't understand")
-                    self.tts.say("I didn't quite catch that.")
-                    time.sleep(1.0)
-                    continue
-
-                # Confirm destructive steps
-                detail = f"{step.intent} → {step.app}"
-                if step.target:
-                    detail += f" [{step.target}]"
-
-                if step.intent in CONFIRM_INTENTS:
-                    self.overlay.set_state(State.THINKING, f"Confirm: {detail}")
-                    if not self._get_confirmation(step):
-                        self.feedback.log(step, False, "Cancelled by user", context=ctx)
-                        self.overlay.set_state(State.IDLE, "Cancelled")
-                        return
-
-                # ── 4. Check for Robot Checks / CAPTCHAs ────────────────
-                is_blocked, reason = BaseExecutor.check_for_block()
-                if is_blocked:
-                    logger.warning(f"Automation blocked: {reason}")
-                    self.overlay.set_state(State.ERROR, "Robot check detected! Please solve it.")
-                    print(f"\n🛑 BLOCK DETECTED: {reason}")
-                    print("   Please solve the CAPTCHA/Login in the browser.")
-                    input("   Press [Enter] once solved to continue...")
-                    self.overlay.set_state(State.THINKING, "Resuming...")
-                    # Re-collect DOM after user intervention
-                    dom_after = BaseExecutor.observe_active_page()
-
-                # Execute step
-                self.overlay.set_state(State.EXECUTING, f"Step {step_num}: {step.intent}")
-                self.tts.say(f"Executing {step.intent}")
-                dom_before = BaseExecutor.observe_active_page() or ctx.dom
-                success, result_msg = self.router.route(step, ctx)
-                dom_after = BaseExecutor.observe_active_page()
-
-                t_step = time.time()
-                logger.info(f"Step {step_num} done in {t_step - t_parallel:.2f}s: {result_msg}")
-
-                # Log step to feedback store
-                session_id = self.feedback.log(
-                    step, success, result_msg, context=ctx,
-                    dom_before=dom_before, dom_after=dom_after,
-                )
-                self.feedback.log_ui_action_events(
-                    session_id, BaseExecutor.consume_action_events()
-                )
-                self.feedback.log_page_snapshot(session_id, dom_after or dom_before)
-
-                if not success:
-                    overall_success = False
-                    self.overlay.set_state(State.ERROR, f"Step {step_num} failed. Re-planning...")
-                    logger.warning(f"Step {step_num} failed: {result_msg}. Triggering dynamic re-plan...")
-                    
-                    # ── DYNAMIC RE-PLAN ─────────────────────────────────────
-                    # We capture the NEW context and ask the planner to finish the original goal
-                    # but starting from this error state.
-                    time.sleep(1.0)
-                    new_ctx = self.context.collect()
-                    new_ctx.learning_hints = self.feedback.get_learning_hints()
-                    
-                    # We continue the outer loop with a recursive-like call to plan()
-                    # but we simplify by just breaking and letting the user know or 
-                    # we can actually loop back. Let's loop back for 1 retry.
-                    recovery_success = False
-                    for retry_step in self.planner.plan(f"Finish the goal: {text} (Note: {result_msg} just happened)", new_ctx):
-                        step_num += 1
-                        self.overlay.set_state(State.EXECUTING, f"Retry Step {step_num}: {retry_step.intent}")
-                        s2, m2 = self.router.route(retry_step, new_ctx)
-                        if s2:
-                            self.overlay.set_state(State.SUCCESS, "Recovery successful")
-                            time.sleep(0.8)
-                            recovery_success = True
-                        else:
-                            # ── DIAGNOSE FAILURE ────────────────────────────
-                            diagnosis = self.router.browser_executor.diagnose_failure(text, [f"{step.intent}:{result_msg}"])
-                            self.overlay.set_state(State.ERROR, diagnosis[:60])
-                            logger.error(f"Recovery failed. Diagnosis: {diagnosis}")
-                            return # Hard stop if recovery fails
-                    
-                    if not recovery_success:
-                        break # Exit the main step loop if recovery was never even yielded or finished
-                    
-                    break # Finished recovery plan successfully
-                else:
-                    self.overlay.set_state(State.SUCCESS, result_msg[:60])
-                    time.sleep(0.8)  # brief success flash before next step
-
-                # Update ctx DOM for next step (page may have changed)
-                if dom_after:
-                    ctx.dom = dom_after
-
-            if step_num == 0:
-                self.overlay.set_state(State.ERROR, "No actions found")
-                time.sleep(1.5)
-            elif overall_success:
-                total = time.time() - t_start
-                self.overlay.set_state(State.SUCCESS, f"Done ({total:.1f}s)")
-                time.sleep(2.0)
-            else:
-                self.overlay.set_state(State.ERROR, "Some steps failed")
-                time.sleep(2.0)
-
-            # ── 5. Log to session history ────────────────────────────────
-            self._history.append({
-                "command": text,
-                "success": overall_success,
-                "timestamp": time.time()
-            })
-            self._history = self._history[-10:] # Keep last 10 local
-
-            self.overlay.set_state(State.IDLE)
-
+            self._execute_text(text, ctx)
+        
         except Exception as e:
-            logger.exception(f"Pipeline error: {e}")
-            self.overlay.set_state(State.ERROR, str(e)[:60])
-            time.sleep(2)
+            logger.error(f"Pipeline error: {e}")
+            self.overlay.set_state(State.ERROR, "System Error")
+            time.sleep(1.5)
             self.overlay.set_state(State.IDLE)
         finally:
             with self._lock:
                 self._listening = False
+
+    def _execute_text(self, text: str, ctx: Context):
+        # ── 3. Streaming plan execution ──────────────────────────────
+        self.overlay.set_state(State.THINKING, "Planning...")
+
+        # ── INTERCEPT: Save/Load Agent Commands ──────────────────────
+        lower_text = text.lower()
+        if "save this agent as" in lower_text:
+            agent_name = lower_text.split("save this agent as")[-1].strip()
+            if agent_name:
+                self.agents.save_agent(agent_name, self.planner.custom_system_prompt or "Default JARVIS Persona")
+                msg = f"Agent {agent_name} saved successfully."
+                self.overlay.set_state(State.SUCCESS, msg)
+                self.tts.say(msg)
+                time.sleep(1.5); self.overlay.set_state(State.IDLE); return
+
+        if "switch to" in lower_text or "load" in lower_text:
+            parts = lower_text.split("switch to") if "switch to" in lower_text else lower_text.split("load")
+            agent_name = parts[-1].strip().replace(" agent", "")
+            
+            if "default" in agent_name:
+                self.planner.set_persona(None)
+                msg = "Switched to default JARVIS persona."
+            else:
+                config = self.agents.load_agent(agent_name)
+                if config:
+                    self.planner.set_persona(config.get("system_prompt"))
+                    msg = f"Agent {agent_name} loaded. I am ready."
+                else:
+                    msg = f"I couldn't find an agent named {agent_name}."
+            
+            self.overlay.set_state(State.SUCCESS, msg)
+            self.tts.say(msg)
+            time.sleep(1.5); self.overlay.set_state(State.IDLE); return
+
+        step_num = 0
+        overall_success = True
+        t_parallel = time.time()
+
+        for step in self.planner.plan(text, ctx):
+            if self._abort_flag: 
+                self.overlay.set_state(State.IDLE, "Aborted")
+                self.tts.say("Task aborted.")
+                break
+            step_num += 1
+
+            if step.intent == "unknown" or step.confidence < 0.5:
+                self.feedback.log(step, False, "Unknown intent", context=ctx)
+                self.overlay.set_state(State.ERROR, f"Step {step_num}: couldn't understand")
+                self.tts.say("I didn't quite catch that.")
+                time.sleep(1.0)
+                continue
+
+            # Execute step
+            self.overlay.set_state(State.EXECUTING, f"Step {step_num}: {step.intent}")
+            self.tts.say(f"Executing {step.intent}")
+            
+            # Simple native CDP check
+            success, result_msg = self.router.route(step, ctx)
+
+            t_step = time.time()
+            logger.info(f"Step {step_num} done in {t_step - t_parallel:.2f}s: {result_msg}")
+
+            if not success:
+                overall_success = False
+                self.overlay.set_state(State.ERROR, f"Step {step_num} failed.")
+                break
+            else:
+                self.overlay.set_state(State.SUCCESS, result_msg[:60])
+                time.sleep(0.8)
+
+        if overall_success:
+            self.overlay.set_state(State.SUCCESS, "All tasks completed.")
+            self.tts.say("All tasks completed.")
+        
+        time.sleep(1.5)
+        self.overlay.set_state(State.IDLE)
+
+        # ── 5. Log to session history ────────────────────────────────
+        self._history.append({
+            "command": text,
+            "success": overall_success,
+            "timestamp": time.time()
+        })
+        self._history = self._history[-10:] # Keep last 10 local
+
+        self.overlay.set_state(State.IDLE)
 
     # ── Confirmation ──────────────────────────────────────────────────────
 
@@ -329,12 +284,26 @@ class JARVISOrchestrator:
     # ── Hotkey listener ───────────────────────────────────────────────────
 
     def run(self):
+        if not HAS_PYNPUT:
+            logger.warning("Hotkey listener (pynput) missing. Running in Terminal Mode.")
+            logger.info("Type your command below (or 'exit' to quit):")
+            while True:
+                try:
+                    text = input("\nJARVIS > ").strip()
+                    if text.lower() in ("exit", "quit"): break
+                    if text:
+                        # Fake a pipeline run with the typed text
+                        self._run_pipeline_text(text)
+                except (EOFError, KeyboardInterrupt):
+                    break
+            self._shutdown()
+            return
+
         # We'll use a set to track pressed keys for the PTT (Push-To-Talk) behavior
         pressed_keys = set()
         
         # Define our activation keys
         TRIGGER_KEYS = {keyboard.Key.ctrl_l, keyboard.Key.ctrl_r, keyboard.Key.space}
-        REQUIRED_COMBO = {keyboard.Key.ctrl_l, keyboard.Key.space} # Can also be ctrl_r
         
         def on_press(key):
             if key == keyboard.Key.esc:
@@ -345,14 +314,15 @@ class JARVISOrchestrator:
                 return
             pressed_keys.add(key)
             
-            # Check for Ctrl+Space
+            # Check for Ctrl+Shift+Space
             is_ctrl = keyboard.Key.ctrl_l in pressed_keys or keyboard.Key.ctrl_r in pressed_keys
-            # Check for Alt+Space
             is_alt = keyboard.Key.alt_l in pressed_keys or keyboard.Key.alt_r in pressed_keys
-            
+            is_shift = keyboard.Key.shift in pressed_keys or keyboard.Key.shift_r in pressed_keys
             is_space = keyboard.Key.space in pressed_keys
             
-            if (is_ctrl or is_alt) and is_space:
+            if is_ctrl and is_shift and is_space:
+                self._on_text_hotkey()
+            elif (is_ctrl or is_alt) and is_space:
                 self._on_hotkey()
 
         def on_release(key):
