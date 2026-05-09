@@ -1,134 +1,105 @@
-# Whisperflowactions
+# 🎙️ JARVIS: The Autonomous Voice Agent
 
-Voice-first desktop assistant that turns speech into app actions.
-Works with **any language**, runs fully local with **Ollama**, or cloud with **OpenAI**.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Playwright](https://img.shields.io/badge/Framework-Playwright-green.svg)](https://playwright.dev/)
 
-## What It Does
+**JARVIS** is a high-performance, autonomous desktop assistant that transforms natural speech into complex web actions. Unlike traditional voice assistants that only answer questions, JARVIS **executes** work by navigating, interacting, and verifying tasks across any web application.
 
-Whisperflowactions listens for a hotkey, records speech, transcribes it, collects desktop and browser context, parses a structured intent, confirms risky actions, executes through browser automation, and logs the result for future learning.
+---
 
-The current MVP supports:
+## 🚀 Key Features
 
-- WhatsApp Web messages
-- Gmail compose, summarize, and professional reply drafting
-- Browser page summarization
-- Notion task/page creation
-- Generic DOM/mouse browser actions such as click, type, and press key
-- Adaptive UI memory from successful DOM/text/role/mouse strategies
-- Optional screenshot, video, and Playwright trace evidence for UI changes
-- Bounded observe-plan-act loop for browser tasks
-- **Multi-language speech recognition** (auto-detect or pinned language)
-- **Local LLM support** via Ollama (llama3, mistral, phi3, gemma2, etc.)
-- **Parallel pipeline** — STT and context collection run concurrently for <3s latency
+### 🧠 Autonomous Browser Interaction
+JARVIS doesn't just click buttons; it understands web interfaces.
+- **Smart Scrolling & Navigation**: Automatically finds elements below the fold or across multiple pages.
+- **Semantic DOM Targeting**: Prioritizes interactive elements based on visibility and importance.
+- **Element Stability**: Intelligent waits for animations and network hydration to prevent "ghost clicks."
 
-## Runtime Flow
+### 👁️ Vision-Augmented Reliability
+Powered by **GPT-4o-mini Vision** for near-human task verification.
+- **Goal Verification**: JARVIS captures screenshots to visually confirm if a task (e.g., "Message Sent") was actually completed.
+- **Autonomous Diagnosis**: If a task fails or gets blocked by a CAPTCHA, JARVIS analyzes the screen and explains *why* in plain English.
 
-```text
-Ctrl+Space
-  -> audio capture with VAD (500ms silence cutoff)
-  -> [parallel] Whisper STT (any language) + context collection
-  -> LLM intent parse (OpenAI API or local Ollama)
-  -> confirmation for risky actions
-  -> Playwright executor
-  -> selector, role/text, DOM-box mouse, screenshot fallback
-  -> repeat observe/act/verify until done or max_steps
-  -> before/after DOM + action strategy logging
-  -> learning hints for future commands
+### 🔄 Self-Healing & Adaptive Memory
+- **Dynamic Re-Planning**: If an action fails, JARVIS automatically stops, re-scans the page, and generates a recovery plan.
+- **Experiential Learning**: Remembers successful selectors and strategies for your favorite sites, getting faster with every use.
+
+### 🎙️ Premium Voice Interface
+- **Push-to-Talk (PTT)**: Low-latency interaction via `Ctrl+Space`. It stops listening the instant you release the key.
+- **Multimodal Planning**: Sends layout snapshots with voice intent for context-aware reasoning.
+- **Vocal Feedback (TTS)**: JARVIS talks back, announcing actions and results for an eyes-free experience.
+
+### 👤 Multi-Expert Personas
+- **Save & Load Agents**: Create specialized experts (e.g., "Research Specialist", "Shopping Buddy") with custom instructions and switch between them via voice.
+
+---
+
+## 🛠️ How It Works
+
+```mermaid
+graph TD
+    A[Voice Input] -->|PTT| B[Whisper STT]
+    B --> C{Context Collector}
+    C -->|DOM + Vision + History| D[Multimodal Planner]
+    D -->|Streaming Steps| E[Action Router]
+    E -->|Browser Executor| F[Dynamic Web Interaction]
+    F -->|Failure?| G[Self-Healing Recovery]
+    F -->|Success?| H[Vision Verification]
+    H --> I[Feedback & Learning]
 ```
 
-## Project Structure
+---
 
-```text
-core/
-  orchestrator.py       Main event loop
-  audio_capture.py      Microphone input and VAD
-  stt_engine.py         Whisper.cpp (multilingual) or OpenAI STT fallback
-  intent_parser.py      Speech/context to JSON intent (OpenAI or Ollama)
-  context_collector.py  Active window, clipboard, DOM, mouse
-  action_router.py      Intent to executor routing
-  feedback_store.py     SQLite history, corrections, learning hints
+## 📥 Setup
 
-executors/
-  base_executor.py      Shared Playwright browser, DOM observation, mouse helpers
-  whatsapp_executor.py  WhatsApp Web actions
-  gmail_executor.py     Gmail actions
-  browser_executor.py   Generic browser, Notion, DOM/mouse actions
-
-models/
-  intent_schema.py      Pydantic intent and context models
-
-ui/
-  overlay.py            Floating PyQt5 HUD
-```
-
-## Setup On Windows
-
+### 1. Installation
+Clone the repository and run the automated setup:
 ```powershell
 .\setup.ps1
 ```
 
-Then edit `.env` and set:
-
-```text
-# Speech-to-text
-WHISPER_BIN=whisper-cli
-WHISPER_MODEL_PATH=models/ggml-base.bin   # use ggml-base.bin for multilingual
-WHISPER_LANGUAGE=auto                     # auto | en | hi | es | ar | zh | ja | etc.
-
-# LLM provider (pick one)
-LLM_PROVIDER=openai                       # openai | ollama
+### 2. Configuration
+Edit your `.env` file with your preferences:
+```env
+# Intelligence
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
-# — or for fully local —
-# LLM_PROVIDER=ollama
-# OLLAMA_MODEL=llama3                     # any model pulled via: ollama pull llama3
-# OLLAMA_BASE_URL=http://localhost:11434
 
-BROWSER_PROFILE_PATH=C:\Users\you\AppData\Local\JARVIS\browser-profile
-RECORD_VIDEO_DIR=data/videos
-RECORD_TRACE_DIR=data/traces
+# Voice Settings
+WHISPER_LANGUAGE=auto   # Supports 50+ languages
+TTS_PROVIDER=local      # local | openai
+
+# Persistence
+BROWSER_PROFILE_PATH=C:\Users\YourUser\AppData\Local\JARVIS\profile
 ```
 
-`RECORD_VIDEO_DIR` and `RECORD_TRACE_DIR` are optional. Enable them when you want JARVIS to keep visual evidence of UI changes and failed actions. Playwright videos are saved when the browser context closes; traces include DOM snapshots and screenshots for debugging.
-
-Use `BROWSER_PROFILE_PATH` for authenticated end-to-end tests. The first run opens a persistent Chromium profile; log into Gmail, WhatsApp Web, and other apps there once, then future runs reuse that session.
-
-Run:
-
+### 3. Run
 ```powershell
 python core\orchestrator.py
 ```
 
-## Setup On macOS/Linux
+---
 
-```bash
-chmod +x setup.sh
-./setup.sh
-python core/orchestrator.py
-```
+## 🎮 Command Examples
+- *"Open LinkedIn, search for AI Engineers in London, and summarize the first profile."*
+- *"Go to Amazon and find a mechanical keyboard under $100 with 4+ stars."*
+- *"Draft a professional reply to the last email from Sarah in Gmail."*
+- *"Save this agent as my Research Assistant."*
+- *"Switch to Research Assistant and summarize this article."*
 
-## Hotkey
+---
 
-`Ctrl + Space` starts listening.
+## 🛡️ Safety & Privacy
+- **Emergency Stop**: Tap `Esc` at any time to instantly kill all autonomous actions.
+- **Confirmation Mode**: Sensitive actions (like sending messages) require voice or HUD confirmation by default.
+- **Local Fallback**: Supports **Ollama** for 100% private, offline LLM processing.
 
-## Running Fully Local (No API Keys)
+---
 
-1. Install [Ollama](https://ollama.com) and pull a model:
-   ```bash
-   ollama pull llama3
-   ```
-2. Download the multilingual Whisper model:
-   ```bash
-   # From https://huggingface.co/ggerganov/whisper.cpp
-   curl -L -o models/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
-   ```
-3. Set `.env`:
-   ```text
-   LLM_PROVIDER=ollama
-   OLLAMA_MODEL=llama3
-   WHISPER_LANGUAGE=auto
-   WHISPER_MODEL_PATH=models/ggml-base.bin
-   ```
-4. Run: `python core\orchestrator.py`
+## 🤝 Contributing
+JARVIS is an evolving autonomous agent. We welcome contributions to our executor library and vision-verification heuristics!
 
-No OpenAI API key required. Everything runs on your machine.
+---
+
+**Built with ❤️ for the future of Autonomous Web Interaction.**
