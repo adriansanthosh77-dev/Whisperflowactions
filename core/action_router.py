@@ -13,10 +13,14 @@ import re
 import os
 import logging
 import requests as http_requests
+from urllib.parse import quote_plus
 from models.intent_schema import IntentResult, Context
 from executors.whatsapp_executor import WhatsAppExecutor
 from executors.gmail_executor import GmailExecutor
 from executors.browser_executor import BrowserExecutor
+from executors.base_executor import BaseExecutor
+from executors.pc_executor import PCExecutor
+from executors.chat_executor import ChatExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,8 @@ logger = logging.getLogger(__name__)
 _whatsapp = WhatsAppExecutor()
 _gmail    = GmailExecutor()
 browser_executor = BrowserExecutor()
+pc_executor = PCExecutor()
+chat_executor = ChatExecutor()
 
 # ── Hard-wired route table for dedicated executors ───────────────────────
 ROUTE_TABLE = {
@@ -76,6 +82,7 @@ KNOWN_URLS: dict[str, str] = {
     "google":      "https://www.google.com",
     "bing":        "https://www.bing.com",
     "duckduckgo":  "https://www.duckduckgo.com",
+    "brave":       "https://search.brave.com",
     "news":        "https://news.google.com",
     "bbc":         "https://www.bbc.com",
     # Shopping
@@ -98,6 +105,19 @@ KNOWN_URLS: dict[str, str] = {
     "aws":         "https://console.aws.amazon.com",
     "azure":       "https://portal.azure.com",
     "gcp":         "https://console.cloud.google.com",
+}
+
+SEARCH_URLS: dict[str, str] = {
+    "youtube": "https://www.youtube.com/results?search_query={query}",
+    "google": "https://www.google.com/search?q={query}",
+    "bing": "https://www.bing.com/search?q={query}",
+    "duckduckgo": "https://duckduckgo.com/?q={query}",
+    "reddit": "https://www.reddit.com/search/?q={query}",
+    "amazon": "https://www.amazon.com/s?k={query}",
+    "github": "https://github.com/search?q={query}",
+    "stackoverflow": "https://stackoverflow.com/search?q={query}",
+    "twitter": "https://twitter.com/search?q={query}",
+    "x": "https://x.com/search?q={query}",
 }
 
 
@@ -144,7 +164,30 @@ def resolve_url(app_name: str, intent: IntentResult) -> str:
     return f"https://www.google.com/search?q={query}"
 
 
+def resolve_search_url(app_name: str, query: str) -> str:
+    name = (app_name or "google").strip().lower()
+    encoded = quote_plus(query.strip())
+    if not encoded:
+        return resolve_url(name, IntentResult("open_app", name, name, {}, 1.0, ""))
+    if name in SEARCH_URLS:
+        return SEARCH_URLS[name].format(query=encoded)
+    for key, template in SEARCH_URLS.items():
+        if key in name or name in key:
+            return template.format(query=encoded)
+    base = resolve_url(name, IntentResult("open_app", name, name, {}, 1.0, ""))
+    if "google.com/search" in base:
+        return base
+    return f"https://www.google.com/search?q={quote_plus(name + ' ' + query)}"
+
+
 class ActionRouter:
+    def check_health(self) -> tuple[bool, str]:
+        """Verify that the browser backend is reachable."""
+        try:
+            return BaseExecutor.check_health()
+        except Exception as e:
+            return False, str(e)
+
     def route(self, intent: IntentResult, context: Context) -> tuple[bool, str]:
         """
         Dispatch intent to executor.
@@ -155,6 +198,18 @@ class ActionRouter:
 
         if intent.intent == "unknown" or intent.confidence < 0.5:
             return False, f"Couldn't understand command. (confidence={intent.confidence:.0%})"
+
+        if intent.intent in ("pc_action", "chat_reflex"):
+            safety = intent.data.get("safety_level", "safe")
+            if safety == "forbidden":
+                return False, f"Refused unsafe PC action: {intent.data.get('operation', intent.target)}"
+            return pc_executor.execute(intent, context)
+
+        if intent.intent == "chat":
+            return chat_executor.execute(intent, context)
+
+        if intent.intent == "taught_workflow":
+            return browser_executor.run_taught_workflow(intent.data.get("steps", []))
 
         missing = self._check_params(intent)
         if missing:
@@ -190,10 +245,23 @@ class ActionRouter:
         # ── 4. browser_action / send_message on unknown app ─────────────
         # Convert to adaptive browser task on whatever page is open
         if intent.intent in ("browser_action", "send_message", "create_task"):
+            if intent.data.get("action") == "search":
+                query = intent.data.get("query") or intent.data.get("text") or intent.target or intent.raw_text
+                url = resolve_search_url(intent.app, query)
+                search_intent = IntentResult(
+                    intent="open_app",
+                    app=intent.app,
+                    target=query,
+                    data={"url": url},
+                    confidence=1.0,
+                    raw_text=intent.raw_text,
+                )
+                return browser_executor.open_url(search_intent, context)
+
             # If targeting a specific app, open it first if not already there
             app_name = intent.app or ""
-            if app_name not in ("browser", "unknown", ""):
-                current_url = (context.dom or {}).get("url", "")
+            if app_name.lower() not in ("browser", "unknown", "current", ""):
+                current_url = (context.dom or {}).get("url", "") or context.url or BaseExecutor.get_active_page_url_safe()
                 target_url = resolve_url(app_name, intent)
                 if app_name.lower() not in current_url.lower():
                     logger.info(f"Navigating to {target_url} before action")
@@ -201,7 +269,7 @@ class ActionRouter:
                         intent="open_app", app=app_name, target=app_name,
                         data={"url": target_url}, confidence=1.0, raw_text=""
                     )
-                    ok, msg = browser_executor.open_url(nav_intent, context)
+                    ok, msg = browser_executor.open_url(nav_intent, context, wait=True)
                     if not ok:
                         return False, f"Could not navigate to {target_url}: {msg}"
 
@@ -211,7 +279,7 @@ class ActionRouter:
             intent.data.setdefault("action", "auto")
             intent.data.setdefault("max_steps", 8)
             try:
-                return browser_executor.adaptive_browser_task(intent, context)
+                return browser_executor.execute(intent, context)
             except Exception as e:
                 logger.exception(f"Adaptive browser task failed: {e}")
                 return False, f"Browser task failed: {str(e)[:100]}"

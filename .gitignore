@@ -1,0 +1,55 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+
+# Environment
+.env
+.env.local
+
+# Node
+node_modules/
+.hud-node/
+ui/hud/node_modules/
+
+# Data & Runtime
+data/
+*.db
+*.sqlite3
+
+# Models (downloaded on demand)
+models/*.bin
+models/ggml-*
+
+# Binaries (downloaded on demand via scripts/download_binaries.ps1)
+*.exe
+*.dll
+*.zip
+scripts/*.exe
+scripts/*.dll
+bin/
+scratch/
+*.log
+*.wav
+*.onnx
+
+# OpenCode
+.opencode/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*

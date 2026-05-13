@@ -2,6 +2,12 @@
 
 Write-Host "Checking requirements..." -ForegroundColor Cyan
 
+if ($args -contains "--doctor") {
+    $env:KMP_DUPLICATE_LIB_OK = "TRUE"
+    & .\venv\Scripts\python.exe -m core.doctor
+    exit $LASTEXITCODE
+}
+
 # 1. Check Whisper
 if (-not (Test-Path "whisper-cli.exe")) {
     Write-Host "ERROR: whisper-cli.exe missing!" -ForegroundColor Red
@@ -18,7 +24,8 @@ if (-not $ollamaCheck) {
 }
 
 # 3. Ask about Obscura
-$useObscura = Read-Host "Use Obscura Stealth Engine? (y/N)"
+Write-Host "TIP: Choose 'n' to use your real browser (Brave/Chrome/Edge) with a UI." -ForegroundColor Gray
+$useObscura = Read-Host "Use Obscura Stealth Engine? (Headless/No-UI) (y/N)"
 if ($useObscura -eq "y") {
     Write-Host "Starting Obscura Stealth Engine..." -ForegroundColor Green
     Start-Process ".\obscura.exe" -ArgumentList "serve --port 9222 --stealth" -NoNewWindow
@@ -30,4 +37,5 @@ if ($useObscura -eq "y") {
 
 # 4. Run JARVIS
 Write-Host "Launching JARVIS..." -ForegroundColor Cyan
+$env:KMP_DUPLICATE_LIB_OK = "TRUE"
 & .\venv\Scripts\python.exe core\orchestrator.py

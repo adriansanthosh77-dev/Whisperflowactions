@@ -8,10 +8,7 @@ import time
 import logging
 import os
 import requests
-from dotenv import load_dotenv
 from models.intent_schema import IntentResult, Context
-
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()

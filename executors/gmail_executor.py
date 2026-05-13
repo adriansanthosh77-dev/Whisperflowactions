@@ -18,13 +18,14 @@ class GmailExecutor(BaseExecutor):
     def send_email(self, intent: IntentResult, context: Context) -> tuple[bool, str]:
         recipient = intent.target
         message = intent.data.get("message", "")
+        draft_only = bool(intent.data.get("draft_only"))
 
         if not recipient:
             return False, "No recipient specified."
 
         try:
             self.navigate(GMAIL_URL)
-            time.sleep(5)
+            self.wait_for_ready(timeout=10)
             
             # Simple adaptive attempt via CDP
             self.click_resilient(None, labels=["Compose"])
@@ -38,11 +39,15 @@ class GmailExecutor(BaseExecutor):
             self.fill_resilient(None, message, labels=["Message Body"])
             time.sleep(0.5)
             
-            # Ctrl+Enter to send
-            self._cdp.send("Input.dispatchKeyEvent", {"type": "rawKeyDown", "windowsVirtualKeyCode": 17, "modifiers": 2}) # Ctrl
-            self._cdp.send("Input.dispatchKeyEvent", {"type": "char", "text": "\r", "modifiers": 2}) # Enter
-            self._cdp.send("Input.dispatchKeyEvent", {"type": "keyUp", "windowsVirtualKeyCode": 17})
-            
+            if draft_only:
+                return True, f"Email draft prepared for {recipient}."
+
+            # Ctrl+Enter to send (correct CDP key events)
+            self._cdp.send("Input.dispatchKeyEvent", {"type": "rawKeyDown", "windowsVirtualKeyCode": 17}) # Ctrl down
+            self._cdp.send("Input.dispatchKeyEvent", {"type": "rawKeyDown", "windowsVirtualKeyCode": 13}) # Enter down
+            self._cdp.send("Input.dispatchKeyEvent", {"type": "keyUp", "windowsVirtualKeyCode": 13}) # Enter up
+            self._cdp.send("Input.dispatchKeyEvent", {"type": "keyUp", "windowsVirtualKeyCode": 17}) # Ctrl up
+
             return True, f"Email sent to {recipient}."
         except Exception as e:
             return False, f"Gmail send failed: {str(e)[:80]}"
@@ -57,16 +62,23 @@ class GmailExecutor(BaseExecutor):
             return False, f"Summarize failed: {str(e)[:80]}"
 
     def _gpt_summarize(self, text: str) -> str:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"}
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": "Summarize this email thread in 3-5 bullet points. Be concise."},
-                {"role": "user", "content": text},
-            ],
-            "max_tokens": 300,
-        }
-        resp = requests.post(url, headers=headers, json=payload, timeout=20)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+        model = os.getenv("OLLAMA_MODEL", "llama3.2:1b")
+        try:
+            resp = requests.post(
+                f"{base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "Summarize this email thread in 3-5 bullet points. Be concise."},
+                        {"role": "user", "content": text},
+                    ],
+                    "stream": False,
+                    "options": {"temperature": 0.1}
+                },
+                timeout=20
+            )
+            resp.raise_for_status()
+            return resp.json().get("message", {}).get("content", "").strip()
+        except Exception:
+            return "Summary unavailable (Ollama offline)."

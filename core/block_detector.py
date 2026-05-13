@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 BLOCK_KEYWORDS = [
     "captcha", "robot check", "verify you are human", "not a robot",
     "access denied", "please log in", "sign in to continue", "security check",
-    "press and hold", "solve the puzzle"
+    "press and hold", "solve the puzzle", "cookies", "accept all cookies",
+    "allow notifications", "continue to site", "age verification",
+    "confirm you are", "blocked", "unusual traffic", "permission",
+    "payment", "checkout", "credit card", "card number", "billing",
+    "place order", "complete purchase", "buy now"
 ]
 
 class BlockDetector:
@@ -26,7 +30,13 @@ class BlockDetector:
 
     def is_blocked(self, dom: dict, screenshot_path: Optional[str] = None) -> tuple[bool, str]:
         # 1. Quick DOM text check
-        page_text = f"{dom.get('title', '')} {json.dumps(dom.get('appStructure', {}))}".lower()
+        page_text = " ".join([
+            str(dom.get("title", "")),
+            str(dom.get("url", "")),
+            str(dom.get("bodyText", "")),
+            json.dumps(dom.get("appStructure", {})),
+            json.dumps(dom.get("elements", [])),
+        ]).lower()
         for kw in BLOCK_KEYWORDS:
             if kw in page_text:
                 return True, f"Detected: {kw}"

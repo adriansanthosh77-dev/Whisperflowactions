@@ -1,0 +1,44 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: jarvis-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=10m
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  jarvis:
+    build: .
+    container_name: jarvis
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+      - /dev/snd:/dev/snd:ro
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - PULSE_SERVER=${PULSE_SERVER:-unix:/run/user/1000/pulse/native}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2:1b
+      - LLM_PROVIDER=ollama
+      - TTS_PROVIDER=piper
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    stdin_open: true
+    tty: true
+
+volumes:
+  ollama_data:

@@ -1,111 +1,85 @@
 """
 tts_engine.py — JARVIS Voice Feedback System.
-Native Windows Fallback: Uses PowerShell for speech if pyttsx3 is missing.
-"""
 
+Providers (in priority order):
+  1. edge (default) — Microsoft Edge free neural TTS via edge-tts
+  2. piper — Local ONNX neural TTS (fallback if edge fails)
+  3. powershell — Native Windows Speech API (last resort)
+"""
 import os
 import threading
 import logging
-import requests
 import subprocess
-from dotenv import load_dotenv
 
-# Try to import pyttsx3, but we have a solid PowerShell fallback now
-try:
-    import pyttsx3
-    HAS_PYTTSX3 = True
-except ImportError:
-    HAS_PYTTSX3 = False
-
-load_dotenv()
 logger = logging.getLogger(__name__)
 
-TTS_PROVIDER = os.getenv("TTS_PROVIDER", "local").strip().lower()
-TTS_VOICE_ID = os.getenv("TTS_VOICE_ID", "").strip()
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge").strip().lower()
+
 
 class TTSEngine:
     def __init__(self):
         self.provider = TTS_PROVIDER
-        self._local_engine = None
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        
-        if self.provider == "local" and HAS_PYTTSX3:
-            self._init_local()
-            
-    def _init_local(self):
-        try:
-            self._local_engine = pyttsx3.init()
-            self._local_engine.setProperty('rate', 175)
-            if TTS_VOICE_ID:
-                self._local_engine.setProperty('voice', TTS_VOICE_ID)
-        except Exception as e:
-            logger.error(f"Failed to init local TTS: {e}")
+        self._edge = None
 
-    def say(self, text: str, wait: bool = False):
+    def say(self, text: str, wait: bool = False, on_start=None, on_end=None):
         if not text: return
-        
-        if self.provider == "local":
-            if HAS_PYTTSX3 and self._local_engine:
-                def _speak_pyttsx3():
-                    try:
-                        engine = pyttsx3.init()
-                        engine.setProperty('rate', 180)
-                        engine.say(text)
-                        engine.runAndWait()
-                    except Exception:
-                        self._speak_powershell(text) # Fallback to PS
-                
-                t = threading.Thread(target=_speak_pyttsx3, daemon=True)
-                t.start()
-                if wait: t.join()
-            else:
-                # Direct to PowerShell
-                t = threading.Thread(target=self._speak_powershell, args=(text,), daemon=True)
-                t.start()
-                if wait: t.join()
-            
-        elif self.provider == "openai":
-            # (OpenAI TTS implementation remains the same as before)
-            self._speak_openai(text)
 
-    def _speak_powershell(self, text: str):
+        def _wrapper(target_func):
+            try:
+                target_func(text, on_start)
+            finally:
+                if on_end: on_end()
+
+        if self.provider in ("edge", "kokoro"):
+            t = threading.Thread(target=_wrapper, args=(self._speak_edge,), daemon=True)
+            t.start()
+            if wait: t.join()
+        elif self.provider == "piper":
+            t = threading.Thread(target=_wrapper, args=(self._speak_piper,), daemon=True)
+            t.start()
+            if wait: t.join()
+        else:
+            t = threading.Thread(target=_wrapper, args=(self._speak_powershell,), daemon=True)
+            t.start()
+            if wait: t.join()
+
+    def _speak_edge(self, text: str, on_start_playing=None):
+        """High-quality neural TTS via Microsoft Edge free API."""
+        try:
+            from core.tts_edge import get_edge_tts
+            edge = get_edge_tts()
+            if not edge.speak(text, on_start_playing=on_start_playing):
+                self._speak_powershell(text, on_start_playing)
+        except ImportError:
+            self._speak_piper(text, on_start_playing)
+        except Exception as e:
+            logger.error(f"Edge TTS failed: {e}")
+            self._speak_piper(text, on_start_playing)
+
+    def _speak_piper(self, text: str, on_start_playing=None):
+        """Neural local TTS using Piper (fallback)."""
+        try:
+            from core.tts_piper import get_piper_tts
+            piper = get_piper_tts()
+            if not piper.speak(text, on_start_playing=on_start_playing):
+                self._speak_powershell(text, on_start_playing)
+        except Exception as e:
+            logger.error(f"Piper speak failed: {e}")
+            self._speak_powershell(text, on_start_playing)
+
+    def _speak_powershell(self, text: str, on_start_playing=None):
         """Native Windows Speech fallback via PowerShell."""
         try:
-            # Escape single quotes for PowerShell
+            if on_start_playing: on_start_playing()
             safe_text = text.replace("'", "''")
-            ps_command = f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{safe_text}')"
+            ps_command = (
+                f"Add-Type -AssemblyName System.Speech; "
+                f"(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{safe_text}')"
+            )
             subprocess.run(["powershell", "-Command", ps_command], capture_output=True, timeout=15)
         except Exception as e:
             logger.error(f"PowerShell TTS failed: {e}")
 
-    def _speak_openai(self, text: str):
-        def _speak_api():
-            try:
-                import tempfile
-                from pygame import mixer
-                
-                url = "https://api.openai.com/v1/audio/speech"
-                headers = {"Authorization": f"Bearer {self.api_key}"}
-                payload = {"model": "tts-1", "voice": "alloy", "input": text}
-                
-                resp = requests.post(url, headers=headers, json=payload, timeout=20)
-                resp.raise_for_status()
-                
-                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                    f.write(resp.content)
-                    tmp_path = f.name
-                
-                mixer.init()
-                mixer.music.load(tmp_path)
-                mixer.music.play()
-                while mixer.music.get_busy(): continue
-                mixer.quit()
-                os.unlink(tmp_path)
-            except Exception as e:
-                logger.error(f"OpenAI TTS error: {e}")
-                self._speak_powershell(text) # Final fallback
-
-        threading.Thread(target=_speak_api, daemon=True).start()
 
 def get_tts_engine():
     return TTSEngine()

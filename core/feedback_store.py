@@ -10,6 +10,7 @@ import sqlite3
 import logging
 from datetime import datetime
 from pathlib import Path
+import dataclasses
 from models.intent_schema import IntentResult, Context
 
 logger = logging.getLogger(__name__)
@@ -101,8 +102,8 @@ class FeedbackStore:
             (
                 datetime.utcnow().isoformat(),
                 intent.raw_text,
-                intent.model_dump_json(),
-                context.model_dump_json() if context else None,
+                json.dumps(dataclasses.asdict(intent)),
+                json.dumps(dataclasses.asdict(context)) if context else None,
                 json.dumps(dom_before or {}),
                 json.dumps(dom_after or {}),
                 result_msg,

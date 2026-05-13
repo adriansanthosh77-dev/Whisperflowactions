@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py", "*_audit.py", "*_validation.py"]
+filterwarnings = ["ignore::UserWarning"]
+log_cli_level = "INFO"
+
+[project]
+name = "jarvis"
+version = "1.0.0"
+description = "JARVIS - Just A Rather Very Intelligent System"

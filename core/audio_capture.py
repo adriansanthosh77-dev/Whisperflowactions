@@ -98,7 +98,7 @@ class AudioCapture:
             if not shorts: return False
             sum_sq = sum(float(s)**2 for s in shorts)
             rms = math.sqrt(sum_sq / len(shorts))
-            return rms > 450
+            return rms > 250
         try:
             return self.vad.is_speech(raw_pcm, SAMPLE_RATE)
         except Exception:

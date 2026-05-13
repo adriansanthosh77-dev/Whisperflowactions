@@ -17,7 +17,15 @@ OS = platform.system()  # "Darwin", "Linux", "Windows"
 
 
 class ContextCollector:
-    def collect(self) -> Context:
+    def collect(self, light: bool = False) -> Context:
+        if light:
+            return Context(
+                active_app=self._get_active_app(),
+                url="",
+                dom={},
+                mouse=BaseExecutor.get_mouse_position(),
+            )
+
         return Context(
             active_app=self._get_active_app(),
             url=self._get_browser_url(),

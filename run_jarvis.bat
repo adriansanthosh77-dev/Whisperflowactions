@@ -1,35 +1,45 @@
 @echo off
-setlocal
+title JARVIS - Just A Rather Very Intelligent System
+cd /d "%~dp0"
 
-echo Checking requirements...
+mode con: cols=72 lines=20
 
-:: 1. Check Whisper
-if not exist "whisper-cli.exe" (
-    echo ERROR: whisper-cli.exe missing!
-    echo Please ensure whisper-cli.exe is in this folder.
-    pause
-    exit /b
-)
+echo ==================================================================
+echo         JARVIS - Just A Rather Very Intelligent System
+echo ==================================================================
+echo.
 
-:: 2. Check Virtual Environment
+:: Check venv
 if not exist "venv\Scripts\python.exe" (
-    echo ERROR: Virtual environment not found!
-    echo Please run setup.ps1 first.
+    echo [FAIL] Virtual environment not found.
+    echo        Run setup.ps1 first.
     pause
-    exit /b
+    exit /b 1
 )
 
-:: 3. Ask about Obscura
-set /p use_obscura="Use Obscura Stealth Engine? (y/N): "
-if /i "%use_obscura%"=="y" (
-    echo Starting Obscura Stealth Engine...
-    start /b "" "obscura.exe" serve --port 9222 --stealth
-    set USE_OBSCURA=true
-) else (
-    set USE_OBSCURA=false
+:: Check .env
+if not exist ".env" (
+    echo [....] Creating .env from template...
+    copy .env.example .env >nul
 )
 
-echo Launching JARVIS...
-venv\Scripts\python.exe core\orchestrator.py
+:: Warn about Ollama
+where ollama >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [WARN] Ollama not found — JARVIS will use browser-based LLM
+    echo        if LLM_PROVIDER=browser is set in .env
+    echo.
+)
 
+echo [....] Starting JARVIS...
+echo [....] (This takes 5-15 seconds to load models)
+echo.
+set KMP_DUPLICATE_LIB_OK=TRUE
+
+:: Launch and show live logs
+venv\Scripts\python.exe core\orchestrator.py 2>&1
+
+:: If we get here, orchestrator exited
+echo.
+echo JARVIS has shut down.
 pause
