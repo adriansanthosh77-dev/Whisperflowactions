@@ -23,9 +23,15 @@ data/
 *.db
 *.sqlite3
 
+# Browser profile (auto-generated)
+jarvis_profile/
+
 # Models (downloaded on demand)
 models/*.bin
 models/ggml-*
+models/kokoro-en-v0_19/
+models/.locks/
+models/models--*/
 
 # Binaries (downloaded on demand via scripts/download_binaries.ps1)
 *.exe
@@ -38,6 +44,10 @@ scratch/
 *.log
 *.wav
 *.onnx
+
+# HuggingFace cache (downloaded models)
+*.hf-hub
+~/.cache/huggingface/
 
 # OpenCode
 .opencode/

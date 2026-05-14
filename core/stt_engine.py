@@ -44,10 +44,11 @@ def get_hardware_config():
 
 DEVICE, COMPUTE_TYPE, THREADS = get_hardware_config()
 
+STT_PROVIDER = os.getenv("STT_PROVIDER", "whisper").strip().lower()
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "en").strip().lower()
-STT_MODEL_SHORT = os.getenv("STT_MODEL_SHORT", "tiny.en").strip()
+STT_MODEL_SHORT = os.getenv("STT_MODEL_SHORT", "base.en").strip()
 STT_MODEL_LONG = os.getenv("STT_MODEL_LONG", "medium.en").strip()
-LONG_PHRASE_THRESHOLD = float(os.getenv("STT_LONG_THRESHOLD", "3.0"))
+LONG_PHRASE_THRESHOLD = float(os.getenv("STT_LONG_THRESHOLD", "2.0"))
 LOW_CONF_THRESHOLD = float(os.getenv("STT_LOW_CONF_THRESHOLD", "0.6"))
 
 REFLEX_PROMPTS = (
@@ -95,7 +96,8 @@ class STTEngine:
 
     def __init__(self):
         threading.Thread(target=self._load_tiny, daemon=True).start()
-        threading.Thread(target=self._warm_large, daemon=True).start()
+        if STT_PROVIDER == "whisper":
+            threading.Thread(target=self._warm_large, daemon=True).start()
         logger.info(
             f"STT: short={STT_MODEL_SHORT}, long={STT_MODEL_LONG}, "
             f"threshold={LONG_PHRASE_THRESHOLD}s, "
@@ -185,6 +187,24 @@ class STTEngine:
             return None
 
         duration = self._audio_duration(wav_bytes)
+
+        # Parakeet fast path (experimental, falls back to Whisper)
+        if STT_PROVIDER == "parakeet":
+            try:
+                from core.stt_parakeet import get_parakeet_stt
+                pk = get_parakeet_stt()
+                if pk and pk._model:
+                    text = pk.transcribe(wav_bytes)
+                    if text:
+                        elapsed = time.time() - start
+                        logger.info(f"Parakeet: '{text[:60]}' in {elapsed:.2f}s")
+                        return STTResult(text=text, words=[], confidence=0.95,
+                                         low_confidence=False, low_conf_words=[],
+                                         model_used="parakeet", duration=elapsed)
+            except Exception:
+                pass
+            logger.info("Parakeet unavailable, using Whisper")
+
         is_long = duration > LONG_PHRASE_THRESHOLD
 
         if is_long:

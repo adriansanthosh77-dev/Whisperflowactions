@@ -29,7 +29,7 @@ FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)  # samples per frame
 
 # Silence detection config (Optimized for speed)
 SILENCE_THRESHOLD_FRAMES = 12   # ~360ms of silence → stop recording (was 16)
-MAX_RECORDING_FRAMES = 300      # max ~9s of audio
+MAX_RECORDING_FRAMES = 600      # max ~18s of audio
 MIN_SPEECH_FRAMES = 2           # ignore sub-60ms noises (was 3)
 
 
@@ -43,7 +43,13 @@ class AudioCapture:
     def stop(self):
         self._stop_signal = True
 
-    def record_until_silence(self) -> Optional[bytes]:
+    def get_current_energy(self) -> float:
+        return 0.0
+
+    def get_noise_floor(self) -> float:
+        return 100.0
+
+    def record_until_silence(self, push_to_talk: bool = False) -> Optional[bytes]:
         self._stop_signal = False
         logger.info("Listening for speech...")
 
@@ -104,6 +110,17 @@ class AudioCapture:
         except Exception:
             return False
 
+    def calculate_vibe_urgency(self, wav_bytes: bytes) -> float:
+        try:
+            shorts = array.array('h', wav_bytes)
+            if not shorts: return 0.0
+            rms = math.sqrt(sum(float(s)**2 for s in shorts) / len(shorts))
+            if rms > 2000: return 0.9
+            if rms > 1000: return 0.5
+            return 0.1
+        except Exception:
+            return 0.0
+
     def _frames_to_wav(self, frames: list[bytes]) -> bytes:
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
@@ -114,5 +131,4 @@ class AudioCapture:
         return buf.getvalue()
 
     def cleanup(self):
-        # sounddevice doesn't need explicit cleanup like PyAudio
         pass

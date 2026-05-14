@@ -34,7 +34,7 @@ class EdgeTTS:
                 await communicate.save(str(temp_wav))
 
             future = asyncio.run_coroutine_threadsafe(_do_tts(), self._loop)
-            future.result(timeout=30)
+            future.result(timeout=5)
 
             if temp_wav.exists():
                 if on_start_playing:

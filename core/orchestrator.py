@@ -2,7 +2,7 @@
 orchestrator.py — Main JARVIS entry point.
 
 Flow:
-  Hotkey (Ctrl+Space)
+  Hotkey: Hold Shift (voice) or Ctrl+Shift+Space (text)
     → Audio capture (VAD, 500ms silence cutoff)
     → [PARALLEL] Whisper STT + Context collection
     → Streaming Planner (LLM generates steps, step 1 executes before step 2 is parsed)
@@ -85,7 +85,7 @@ class JARVISOrchestrator:
         self.intent_sequencer = IntentSequencer()
         logger.info("IntentSequencer loaded")
 
-        self.audio    = AudioCapture(vad_threshold=0.2) # High sensitivity for quiet mics
+        self.audio    = AudioCapture()
         self.stt      = get_stt_engine()
         self.tts      = get_tts_engine()
         self.planner  = Planner()
@@ -145,13 +145,11 @@ class JARVISOrchestrator:
 
         threading.Thread(target=_startup_routine, daemon=True).start()
 
-        logger.info("JARVIS ready. Press Ctrl+Space to start listening. Press ESC to abort.")
+        logger.info("JARVIS ready. Hold Shift to talk. Ctrl+Shift+Space for text. ESC to abort.")
         self._start_sleep_timer()
         self._start_wake_word_listener()
         
-        # Start Proactive Overwatch
         start_overwatch(self._on_proactive_trigger)
-        self._start_visualizer_bridge()
 
         # Start system tray icon
         self._tray = run_tray_in_thread(
@@ -174,9 +172,6 @@ class JARVISOrchestrator:
             self._tray.stop()
         if hasattr(self, 'overlay'):
             self.overlay.stop()
-        if hasattr(self, 'audio'):
-            self.audio.cleanup()
-
     def _toggle_listening(self):
         self._listening = not self._listening
         state = State.LISTENING if self._listening else State.IDLE
@@ -217,21 +212,6 @@ class JARVISOrchestrator:
         self.overlay.set_state(State.IDLE, "Aborted")
         return False
 
-    def _start_visualizer_bridge(self):
-        """Polls audio energy and sends to HUD for the visual waveform."""
-        def _bridge():
-            while not self._abort_flag:
-                # Only send energy updates if the HUD is actually listening or the wake word listener is active
-                # To save bandwidth, we pulse more slowly when idle
-                if self._listening:
-                    energy = self.audio.get_current_energy()
-                    self.overlay.set_audio_energy(energy)
-                    time.sleep(0.05) # 20fps for active voice
-                else:
-                    time.sleep(0.2) # slow poll when idle
-
-        threading.Thread(target=_bridge, daemon=True).start()
-
     def _on_proactive_trigger(self, title: str, suggestion: str):
         """Callback for background window events."""
         logger.info(f"Proactive Suggestion: {suggestion} for {title}")
@@ -242,20 +222,28 @@ class JARVISOrchestrator:
             self.tts.say(msg)
 
     def _start_wake_word_listener(self):
-        """Background thread that listens for 'Hey JARVIS' wake word."""
+        """Background thread for wake word detection."""
         def _kws_loop():
             logger.info("Always-on mic active. Listening for wake word...")
             while not self._abort_flag:
-                if not self._listening:
-                    if self.audio.get_current_energy() > self.audio.get_noise_floor() * 1.5:
-                        audio_data = self.audio.capture_snippet(duration=2.0)
-                        if audio_data:
-                            result = self.stt.transcribe(audio_data)
-                            text = result.text if result else ""
-                            if text and any(w in text.lower() for w in ["hey jarvis", "wake up jarvis", "hello jarvis"]):
-                                logger.info(f"Wake word detected: '{text}'")
-                                self._on_hotkey_wake()
-                time.sleep(0.8)
+                try:
+                    if not self._listening:
+                        import sounddevice as sd, numpy as np
+                        chunk = sd.rec(int(16000 * 0.2), samplerate=16000, channels=1, dtype='int16')
+                        sd.wait()
+                        rms = float(np.sqrt(np.mean(chunk.astype(float)**2)))
+                        if rms > 200:
+                            audio_data = self.audio.record_until_silence()
+                            if audio_data and len(audio_data) > 4800:
+                                result = self.stt.transcribe(audio_data)
+                                text = result.text if result else ""
+                                if text and any(w in text.lower()
+                                               for w in ["hey jarvis", "wake up jarvis", "hello jarvis"]):
+                                    logger.info(f"Wake word: '{text}'")
+                                    self._on_hotkey_wake()
+                except Exception:
+                    pass
+                time.sleep(0.5)
 
         threading.Thread(target=_kws_loop, daemon=True).start()
 
@@ -263,7 +251,11 @@ class JARVISOrchestrator:
         def _check():
             while not self._abort_flag:
                 try:
-                    reminders = self.feedback.get_due_reminders()
+                    reminders = []
+                    try:
+                        reminders = self.feedback.get_due_reminders()
+                    except AttributeError:
+                        pass
                     for r in reminders:
                         msg = f"Reminder: {r['text']}"
                         logger.info(msg)
@@ -356,10 +348,7 @@ class JARVISOrchestrator:
         ctx = self.context.collect(light=True)
 
         while self._dictation_active and not self._abort_flag:
-            wav_bytes = self.audio.record_until_silence(
-                push_to_talk=False,
-                silence_frames=35,
-            )
+            wav_bytes = self.audio.record_until_silence(push_to_talk=False)
             if self._abort_flag or not self._dictation_active:
                 break
             if not wav_bytes:
@@ -421,7 +410,7 @@ class JARVISOrchestrator:
                 return
             if not wav_bytes:
                 self.overlay.set_state(State.ERROR, "No speech detected")
-                time.sleep(1.2)
+                time.sleep(0.5)
                 self.overlay.set_state(State.IDLE)
                 return
 
@@ -445,7 +434,7 @@ class JARVISOrchestrator:
             if not stt_result:
                 logger.info(f"STT returned no text in {t_parallel - t_audio:.2f}s")
                 self.overlay.set_state(State.ERROR, "No speech detected")
-                time.sleep(1.2)
+                time.sleep(0.5)
                 self.overlay.set_state(State.IDLE)
                 return
 
@@ -465,34 +454,20 @@ class JARVISOrchestrator:
             if stt_result.low_confidence:
                 low_words = ", ".join(w["word"] for w in stt_result.low_conf_words[:5])
                 logger.warning(f"Low confidence words: {low_words}")
-                self.overlay.set_state(
-                    State.LISTENING,
-                    f"Did you mean: {text}?"
-                )
-                time.sleep(1.5)
-            
-            # ADAPTIVE VIBE CHECK
-            urgency = self.audio.calculate_vibe_urgency(wav_bytes)
-            if urgency > 0.7:
-                logger.info("🚨 URGENCY DETECTED. Switching to fast-response mode.")
-                # Speed up TTS for urgent tasks
-                # self.tts.set_rate(250) # TBD
+                self.overlay.set_state(State.LISTENING, f"Did you mean: {text}?")
+                time.sleep(0.5)
             
             t_plan_start = time.time()
             try:
-                success = self._execute_text(text, ctx, vibe_urgency=urgency)
+                success = self._execute_text(text, ctx)
                 t_end = time.time()
                 
-                # LOG TELEMETRY
                 metric = SessionMetric(
-                    timestamp=t_start,
-                    command=text,
+                    timestamp=t_start, command=text,
                     stt_latency=t_parallel - t_audio,
-                    planning_latency=t_end - t_plan_start, # rough estimate
-                    execution_latency=0.0,
-                    total_latency=t_end - t_start,
+                    planning_latency=t_end - t_plan_start,
+                    execution_latency=0.0, total_latency=t_end - t_start,
                     success=success,
-                    vibe_urgency=urgency
                 )
                 self.telemetry.log_session(metric)
             except KeyboardInterrupt:
@@ -516,16 +491,29 @@ class JARVISOrchestrator:
 
         # --- INTERCEPT: Check for Reflex or Taught Workflow first ---
         lower_text = text.lower()
-        taught = self.feedback.get_taught_workflow(text)
+        taught = None
+        try:
+            taught = self.feedback.get_taught_workflow(text)
+        except AttributeError:
+            pass
         is_reflex = self.planner.can_fast_plan(text)
         from core.brain_router import detect_task_type
         task_type = detect_task_type(text)
         
-        # If it's not a known command/reflex, not a specialized task, and not a special "teach" command,
-        # then offer to teach it instead of going straight to the LLM.
-        if not taught and not is_reflex and task_type == "general" and not any(k in lower_text for k in ["teach me", "teach jarvis", "save this agent", "switch to", "load"]):
-             self._offer_teach_options(text)
-             return
+        # If it's not a known reflex, route plain text through the "type" operation.
+        # This way typing "hello world" in chat mode types it into the active app.
+        if not taught and not is_reflex and task_type == "general" and not any(k in lower_text for k in ["teach me", "teach jarvis", "save this agent", "switch to", "load", "?"]):
+            from executors.pc_executor import PCExecutor
+            from core.planner import IntentResult
+            intent = IntentResult(intent="pc_action", operation="type", target=text,
+                                  data={"operation": "type", "text": text, "safety_level": "safe"},
+                                  confidence=0.9, raw=text)
+            success, msg = PCExecutor().execute(intent, ctx)
+            if success:
+                self.overlay.set_state(State.SUCCESS, f"Typed: {text[:40]}")
+            else:
+                self.overlay.set_state(State.ERROR, f"Type failed: {msg[:30]}")
+            return
 
         step_num = 0
         overall_success = True
@@ -549,14 +537,18 @@ class JARVISOrchestrator:
                 
                 self.overlay.set_state(State.ERROR, f"Step {step_num}: couldn't understand")
                 self.tts.say("I didn't quite catch that.")
-                time.sleep(1.0)
+                time.sleep(0.4)
                 continue
+
 
             # --- ⏰ INTERCEPT: Reminders ---
             if step.intent == "reminder":
                 text = step.data.get("text", "")
                 delay = step.data.get("delay_seconds", 60)
-                self.feedback.set_reminder(text, delay)
+                try:
+                    self.feedback.set_reminder(text, delay)
+                except AttributeError:
+                    pass
                 display = f"{delay//60}m" if delay < 3600 else f"{delay//3600}h"
                 self.overlay.set_state(State.SUCCESS, f"Reminder set for {display}")
                 self.tts.say(f"I'll remind you in {display}.")
@@ -657,7 +649,7 @@ class JARVISOrchestrator:
                 break  # PC locked — skip HUD/TTS
             else:
                 self.overlay.set_state(State.SUCCESS, result_msg[:60])
-                time.sleep(0.8)
+                time.sleep(0.15)
 
         if "Locked the PC" in result_msg:
             return True
@@ -883,7 +875,10 @@ class JARVISOrchestrator:
             self.tts.say("Did I do that correctly? Say yes to save this action, or no to try again.", wait=True)
             if self._ask_yes_no("Approve?"):
                 notes = f"Learned via {mode} mode from: {text}"
-                self.feedback.save_taught_workflow(trigger, text, steps, notes=notes)
+                try:
+                    self.feedback.save_taught_workflow(trigger, text, steps, notes=notes)
+                except AttributeError:
+                    pass
                 self.tts.say(f"Excellent! I've saved '{trigger}' as a new action trigger.")
                 self.overlay.set_state(State.SUCCESS, "Action Saved")
                 time.sleep(1.5)
@@ -1079,35 +1074,25 @@ class JARVISOrchestrator:
             
             # Check for Ctrl+Shift+Space
             is_ctrl = keyboard.Key.ctrl_l in pressed_keys or keyboard.Key.ctrl_r in pressed_keys
-            is_alt = keyboard.Key.alt_l in pressed_keys or keyboard.Key.alt_r in pressed_keys
             is_shift = keyboard.Key.shift in pressed_keys or keyboard.Key.shift_r in pressed_keys
-            is_space = keyboard.Key.space in pressed_keys
+            is_space = hasattr(key, 'char') and key.char == ' '
             
             if is_ctrl and is_shift and hasattr(key, 'char') and key.char and key.char.lower() == 'd':
                 self._toggle_dictation()
             elif is_ctrl and is_shift and is_space:
                 self._on_text_hotkey()
-            elif (is_ctrl or is_alt) and is_space:
+            elif is_shift and not is_ctrl and not self._listening:
                 self._on_hotkey()
 
         def on_release(key):
             if key in pressed_keys:
                 pressed_keys.remove(key)
-            
-            # If we were listening and released the Space key, stop recording.
-            # This is better than stopping on ANY trigger release (like Ctrl),
-            # which was cutting recordings short if the user released Ctrl first.
             if self._listening:
-                is_trigger_key = key == keyboard.Key.space or key in {keyboard.Key.ctrl_l, keyboard.Key.ctrl_r, keyboard.Key.alt_l, keyboard.Key.alt_r}
-                
-                # Check if we still have any trigger keys held
-                any_trigger_held = any(k in pressed_keys for k in {keyboard.Key.space, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r, keyboard.Key.alt_l, keyboard.Key.alt_r})
-                
-                if is_trigger_key and not any_trigger_held:
-                    logger.info("All trigger keys released. Stopping recording...")
+                if key in {keyboard.Key.shift, keyboard.Key.shift_r}:
+                    logger.info("Shift released. Stopping recording...")
                     self.audio.stop()
 
-        logger.info("Hotkey listener active: Ctrl+Space")
+        logger.info("Hotkeys: Hold Shift = voice | Ctrl+Shift+Space = text")
         with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
             try:
                 listener.join()
@@ -1118,8 +1103,8 @@ class JARVISOrchestrator:
     def _shutdown(self):
         logger.info("Shutting down JARVIS...")
         self.overlay.stop()
-        self.audio.cleanup()
         self.feedback.close()
+        BaseExecutor.close()
         BaseExecutor.close()
 
 

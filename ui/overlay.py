@@ -201,7 +201,7 @@ class Overlay:
         frame.pack(padx=10, pady=10, fill="both", expand=True)
         icon = tk.Label(frame, text="O", font=("Segoe UI", 20, "bold"), fg="#888", bg="#1a1a1a")
         text = tk.Label(frame, text="JARVIS ready", font=("Segoe UI", 12, "bold"), fg="#fff", bg="#1a1a1a")
-        sub = tk.Label(frame, text="Ctrl+Space voice | Ctrl+Shift+Space text", font=("Segoe UI", 8), fg="#666", bg="#1a1a1a")
+        sub = tk.Label(frame, text="Hold Shift = voice | Ctrl+Shift+Space = text", font=("Segoe UI", 8), fg="#666", bg="#1a1a1a")
         icon.pack(pady=(8, 0))
         text.pack(pady=2)
         sub.pack(pady=(0, 6))
@@ -215,7 +215,7 @@ class Overlay:
         self._fallback_window["icon"].config(text=cfg["icon"], fg=cfg["color"])
         self._fallback_window["text"].config(text=cfg["text"])
         self._fallback_window["sub"].config(
-            text=(detail[:48] if detail else "Ctrl+Space voice | Ctrl+Shift+Space text"),
+            text=(detail[:48] if detail else "Hold Shift = voice | Ctrl+Shift+Space = text"),
             fg=("#aaa" if detail else "#666"),
         )
 

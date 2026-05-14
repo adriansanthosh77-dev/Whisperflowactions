@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JARVIS - NEURAL HUD</title>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;800;900&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --color-idle: #00ff88;
@@ -18,98 +17,44 @@
             --font-main: 'Orbitron', sans-serif;
             --font-sub: 'Rajdhani', sans-serif;
         }
-
         * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; cursor: none; }
-        
         body {
-            width: 100vw; height: 100vh;
-            overflow: hidden;
+            width: 100vw; height: 100vh; overflow: hidden;
             display: flex; align-items: center; justify-content: center;
-            background: transparent;
-            color: #fff;
+            background: transparent; color: #fff;
         }
-
         #hud-container {
-            position: relative;
+            width: 800px; height: 800px;
             display: flex; align-items: center; justify-content: center;
-            transition: all 0.15s ease;
+            transition: all 0.7s cubic-bezier(0.4, 0, 0.2, 1);
         }
-
-        #hud-container.fullscreen { width: 800px; height: 800px; }
-        #hud-container.mini { 
-            position: fixed; bottom: 50px; right: 50px; 
-            width: 240px; height: 240px; 
+        #hud-container.mini {
+            position: fixed; bottom: 30px; right: 30px;
+            width: 240px; height: 240px;
         }
-
-        /* ── Orbital Tracks ── */
         .track {
-            position: absolute;
-            border-radius: 50%;
+            position: absolute; border-radius: 50%;
             border: 1px solid rgba(255, 255, 255, 0.1);
-            transition: all 0.5s ease;
+            transition: all 0.7s cubic-bezier(0.4, 0, 0.2, 1);
         }
         .t-1 { width: 100%; height: 100%; border-top: 2px solid var(--accent-color); animation: spin-cw 15s linear infinite; }
-        .t-2 { width: 88%; height: 88%; border-bottom: 3px solid var(--accent-color); border-left: 1px solid var(--accent-color); animation: spin-ccw 10s linear infinite; opacity: 0.6; }
+        .t-2 { width: 88%; height: 88%; border-bottom: 3px solid var(--accent-color); animation: spin-ccw 10s linear infinite; opacity: 0.6; }
         .t-3 { width: 78%; height: 78%; border: 1px dashed var(--accent-color); animation: spin-cw 25s linear infinite; opacity: 0.4; }
-
         @keyframes spin-cw { 100% { transform: rotate(360deg); } }
         @keyframes spin-ccw { 100% { transform: rotate(-360deg); } }
-
-        /* ── Glass Orb ── */
         .glass-orb {
-            width: 68%; height: 68%;
-            border-radius: 50%;
+            width: 68%; height: 68%; border-radius: 50%;
             background: radial-gradient(circle, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 70%, #000 100%);
             border: 1px solid rgba(255, 255, 255, 0.15);
-            box-shadow: 
-                0 0 40px rgba(var(--accent-color), 0.3),
-                inset 0 0 20px rgba(0, 0, 0, 0.8);
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             position: relative; overflow: hidden;
-            transition: all 0.5s ease;
+            transition: all 0.7s cubic-bezier(0.4, 0, 0.2, 1);
         }
-
-        /* ── Tech Grid ── */
-        .tech-grid {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background-image: 
-                linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
-            background-size: 20px 20px;
-            border-radius: 50%;
-            opacity: 0.3; pointer-events: none;
-        }
-
-        canvas#electron-mesh {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            z-index: 1;
-            mix-blend-mode: screen;
-        }
-
-        .hud-content {
-            z-index: 10; text-align: center; pointer-events: none;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-        }
-
-        #title {
-            font-family: var(--font-main);
-            font-weight: 900; font-size: 28px; letter-spacing: 6px;
-            color: #ffffff;
-            text-shadow: 0 0 15px var(--accent-color);
-        }
-
-        #subtitle {
-            font-family: var(--font-sub);
-            font-size: 11px; font-weight: 700; letter-spacing: 4px;
-            color: var(--accent-color);
-            margin-top: 5px;
-            text-transform: uppercase;
-        }
-
+        .hud-content { z-index: 10; text-align: center; pointer-events: none; }
+        #title { font-family: var(--font-main); font-weight: 900; font-size: 28px; letter-spacing: 6px; color: #fff; text-shadow: 0 0 15px var(--accent-color); }
+        #subtitle { font-family: var(--font-sub); font-size: 11px; font-weight: 700; letter-spacing: 4px; color: var(--accent-color); margin-top: 5px; text-transform: uppercase; }
         .mini #title { font-size: 14px; letter-spacing: 4px; }
         .mini #subtitle { display: none; }
-
-        /* ── State Dynamic Effects ── */
         .state-idle { --accent-color: var(--color-idle); }
         .state-listening { --accent-color: var(--color-listening); }
         .state-thinking { --accent-color: var(--color-thinking); }
@@ -117,36 +62,19 @@
         .state-speaking { --accent-color: var(--color-speaking); }
         .state-success { --accent-color: var(--color-success); }
         .state-error { --accent-color: var(--color-error); }
-
-        /* Animations */
         .state-idle .glass-orb { animation: breathe 4s infinite ease-in-out; }
         @keyframes breathe { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.2); } }
-
-        .state-thinking .glass-orb { animation: think-pulse 1s infinite alternate cubic-bezier(0.1, 0.7, 1.0, 0.1); }
-        @keyframes think-pulse { 0% { transform: rotate(-3deg); filter: brightness(1); } 100% { transform: rotate(3deg); filter: brightness(1.8); } }
-
-        .state-executing .glass-orb::after {
-            content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: linear-gradient(to bottom, transparent, var(--color-executing), transparent);
-            animation: laser-scan 1s linear infinite;
-            opacity: 0.3; z-index: 5; mix-blend-mode: overlay; pointer-events: none;
-        }
-        @keyframes laser-scan { from { top: -100%; } to { top: 100%; } }
-
-        .state-listening .t-1, .state-speaking .t-1 { animation-duration: 2s; border-width: 4px; }
-        .state-listening .t-2, .state-speaking .t-2 { animation-duration: 1.5s; border-width: 6px; }
-
+        .state-thinking .glass-orb { animation: think-pulse 1s infinite alternate; }
+        @keyframes think-pulse { 0% { transform: rotate(-3deg); } 100% { transform: rotate(3deg); } }
+        canvas#electron-mesh { position: absolute; top: 0; left: 0; width: 100%; height: 100%; mix-blend-mode: screen; }
     </style>
 </head>
 <body class="state-idle">
-
-    <div id="hud-container" class="fullscreen">
+    <div id="hud-container">
         <div class="track t-1"></div>
         <div class="track t-2"></div>
         <div class="track t-3"></div>
-        
         <div class="glass-orb">
-            <div class="tech-grid"></div>
             <canvas id="electron-mesh"></canvas>
             <div class="hud-content">
                 <div id="title">JARVIS</div>
@@ -154,81 +82,29 @@
             </div>
         </div>
     </div>
-
     <script>
         const { ipcRenderer } = require('electron');
-
         const container = document.getElementById('hud-container');
         const title = document.getElementById('title');
         const subtitle = document.getElementById('subtitle');
         const canvas = document.getElementById('electron-mesh');
         const ctx = canvas.getContext('2d');
 
-        let audioEnergy = 0;
-        let targetEnergy = 0;
-        let isFullscreen = true;
+        let audioEnergy = 0, targetEnergy = 0;
+        let isFullscreen = false;
 
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') ipcRenderer.send('hud-hide');
-        });
-
-        let ws;
-        function connectWS() {
-            ws = new WebSocket('ws://127.0.0.1:9223');
-            ws.onopen = resetHB;
-            ws.onclose = () => setTimeout(connectWS, 2000);
-            ws.onmessage = (event) => {
-                resetHB();
-                const data = JSON.parse(event.data);
-                if (data.type === 'state') {
-                    ipcRenderer.send('hud-show');
-                    updateState(data.state, data.message, data.fullscreen);
-                } else if (data.type === 'audio_energy') {
-                    targetEnergy = data.energy;
-                }
-            };
-        }
-        let hb;
-        function resetHB() { clearTimeout(hb); hb = setTimeout(() => { ws.close(); }, 300000); }
-        connectWS();
-
-        let currentState = 'idle';
-
-        function updateState(state, message, fs) {
-            const st = state.toLowerCase();
-            currentState = st;
-            document.body.className = 'state-' + st;
-            container.className = fs ? 'fullscreen' : 'mini';
-
-            if (fs !== isFullscreen || !ws._resized) {
-                ipcRenderer.send('hud-resize', fs ? 'fullscreen' : 'mini');
-                isFullscreen = fs;
-                ws._resized = true;
-                setTimeout(resize, 180);
-            } else {
-                setTimeout(resize, 50);
-            }
-            
-            switch(st) {
-                case 'idle':      title.textContent = "JARVIS"; subtitle.textContent = "SYSTEM IDLE"; break;
-                case 'listening': title.textContent = "LISTENING"; subtitle.textContent = "AWAITING AUDIO"; break;
-                case 'thinking':  title.textContent = "PROCESSING"; subtitle.textContent = "NEURAL LINK"; break;
-                case 'executing': title.textContent = "EXECUTING"; subtitle.textContent = "OVERRIDE"; break;
-                case 'speaking':  title.textContent = "VOCALIZING"; subtitle.textContent = "OUTPUT ACTIVE"; break;
-                case 'success':   title.textContent = "SUCCESS"; subtitle.textContent = "TASK COMPLETE"; break;
-                case 'error':     title.textContent = "ERROR"; subtitle.textContent = "SYSTEM FAULT"; break;
-                default:          title.textContent = "JARVIS";
-            }
-            if (message) subtitle.textContent = message;
+        function resize() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            initParticles();
         }
 
-        const NUM_PARTICLES = 60; 
+        const NUM = 60;
         let particles = [];
-
-        function initMesh() {
+        function initParticles() {
             if (!canvas.width || !canvas.height) return;
             particles = [];
-            for (let i = 0; i < NUM_PARTICLES; i++) {
+            for (let i = 0; i < NUM; i++) {
                 particles.push({
                     x: Math.random() * canvas.width,
                     y: Math.random() * canvas.height,
@@ -239,82 +115,72 @@
             }
         }
 
-        function drawMesh() {
+        function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Safety: Ensure energy values are valid numbers
             if (isNaN(targetEnergy)) targetEnergy = 0;
-            
-            // Simulating vocal jitter for Piper's speech if no direct audio energy is piped
-            let effectiveTarget = targetEnergy;
-            if (currentState === 'speaking' && targetEnergy < 0.05) {
-                effectiveTarget = 0.12 + Math.sin(Date.now() * 0.015) * 0.08;
-            }
-            
-            audioEnergy += (effectiveTarget - audioEnergy) * 0.15;
-            if (isNaN(audioEnergy)) audioEnergy = 0;
-
+            audioEnergy += (targetEnergy - audioEnergy) * 0.15;
             const accent = getComputedStyle(document.body).getPropertyValue('--accent-color').trim() || '#00ff88';
-            
-            let speedMultiplier = 1;
-            if (['thinking', 'listening', 'executing', 'speaking', 'error'].includes(currentState)) {
-                speedMultiplier = 3.5;
-            }
-
+            const speed = (['thinking','listening','executing','speaking','error'].includes(document.body.className.replace('state-',''))) ? 3.5 : 1;
             particles.forEach((p, i) => {
-                // Cap the velocity to keep particles visible
-                let velFactor = speedMultiplier * (1 + Math.min(audioEnergy, 1.5) * 4);
-                let currentVX = p.vx * velFactor;
-                let currentVY = p.vy * velFactor;
-
-                p.x += currentVX;
-                p.y += currentVY;
-                
-                // BOUNCE OFF WALLS
+                let f = speed * (1 + Math.min(audioEnergy, 1.5) * 4);
+                p.x += p.vx * f; p.y += p.vy * f;
                 if (p.x < 0) { p.x = 0; p.vx *= -1; }
                 if (p.x > canvas.width) { p.x = canvas.width; p.vx *= -1; }
                 if (p.y < 0) { p.y = 0; p.vy *= -1; }
                 if (p.y > canvas.height) { p.y = canvas.height; p.vy *= -1; }
-
-                // Draw Electron
-                ctx.globalAlpha = 1; 
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-                ctx.fillStyle = accent;
-                ctx.fill();
-
-                // Draw Lines (Neural Network)
+                ctx.globalAlpha = 1;
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fillStyle = accent; ctx.fill();
                 for (let j = i + 1; j < particles.length; j++) {
                     let p2 = particles[j];
-                    let dx = p.x - p2.x;
-                    let dy = p.y - p2.y;
-                    let d = dx*dx + dy*dy;
-                    // Expanded network for both Listening and Speaking
-                    let maxDistSq = (['listening', 'speaking'].includes(currentState)) ? 12100 : 10000;
-                    
-                    if (d < maxDistSq) {
+                    let dx = p.x - p2.x, dy = p.y - p2.y;
+                    let d = dx * dx + dy * dy;
+                    let maxD = (['listening','speaking'].includes(document.body.className.replace('state-',''))) ? 12100 : 10000;
+                    if (d < maxD) {
                         let dist = Math.sqrt(d);
-                        ctx.beginPath();
-                        ctx.strokeStyle = accent;
+                        ctx.beginPath(); ctx.strokeStyle = accent;
                         ctx.lineWidth = 1.8;
-                        ctx.globalAlpha = (1 - dist / Math.sqrt(maxDistSq)) * 0.65;
-                        ctx.moveTo(p.x, p.y);
-                        ctx.lineTo(p2.x, p2.y);
-                        ctx.stroke();
+                        ctx.globalAlpha = (1 - dist / Math.sqrt(maxD)) * 0.65;
+                        ctx.moveTo(p.x, p.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
                     }
                 }
             });
-            requestAnimationFrame(drawMesh);
-        }
-
-        function resize() {
-            canvas.width = canvas.offsetWidth;
-            canvas.height = canvas.offsetHeight;
-            initMesh();
+            requestAnimationFrame(draw);
         }
         window.addEventListener('resize', resize);
-        resize();
-        drawMesh();
+        setTimeout(resize, 100);
+        draw();
+
+        function updateState(state, message, fs) {
+            isFullscreen = fs;
+            container.className = fs ? '' : 'mini';
+            document.body.className = 'state-' + state.toLowerCase();
+            setTimeout(resize, 100);
+            const texts = {
+                idle: ["JARVIS", "SYSTEM IDLE"],
+                listening: ["LISTENING", "AWAITING AUDIO"],
+                thinking: ["PROCESSING", "NEURAL LINK"],
+                executing: ["EXECUTING", "OVERRIDE"],
+                speaking: ["VOCALIZING", "OUTPUT ACTIVE"],
+                success: ["SUCCESS", "TASK COMPLETE"],
+                error: ["ERROR", "SYSTEM FAULT"]
+            };
+            const t = texts[state.toLowerCase()] || ["JARVIS", ""];
+            title.textContent = t[0];
+            subtitle.textContent = message || t[1];
+        }
+
+        let ws;
+        function connect() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+            ws = new WebSocket('ws://127.0.0.1:9223');
+            ws.onclose = () => setTimeout(connect, 3000);
+            ws.onmessage = (event) => {
+                const d = JSON.parse(event.data);
+                if (d.type === 'state') updateState(d.state, d.message, d.fullscreen);
+            };
+        }
+        connect();
     </script>
 </body>
 </html>

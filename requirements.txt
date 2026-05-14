@@ -1,17 +1,41 @@
 # Core JARVIS Requirements (Python 3.14 compatible)
 
+# Audio / STT
 sounddevice>=0.5.0
-pynput>=1.7.6
-python-dotenv>=1.0.1
-requests>=2.31.0
-pyperclip>=1.8.2
-pygame>=2.5.2
-websockets>=12.0
-comtypes>=1.4.0
-rapidfuzz>=3.8.1
 faster-whisper>=1.0.1
 numpy>=1.24.0
-pystray>=0.19.0
-Pillow>=10.0.0
+
+# Input / Control
+pynput>=1.7.6
 pyautogui>=0.9.54
+
+# Config
+python-dotenv>=1.0.1
+
+# Network
+requests>=2.31.0
+websockets>=12.0
+
+# GUI / Overlay
+Pillow>=10.0.0
+pystray>=0.19.0
+pygame>=2.5.2
+
+# Clipboard / Text
+pyperclip>=1.8.2
+rapidfuzz>=3.8.1
+
+# Windows COM / Hardware
+comtypes>=1.4.0
+
+# GPU Vision (DirectML)
 onnxruntime-directml>=1.24.0
+
+# TTS: Kokoro-82M (install separately)
+# pip install sherpa-onnx
+
+# STT: Parakeet TDT (install separately)
+# pip install onnx-asr[cpu,hub]
+
+# VAD: webrtcvad (optional, improves speech detection)
+# pip install webrtcvad (requires MSVC build tools)

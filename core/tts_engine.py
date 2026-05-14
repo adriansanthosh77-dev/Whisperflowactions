@@ -13,7 +13,8 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge").strip().lower()
+TTS_PROVIDER = (os.getenv("TTS_PROVIDER") or "kokoro").strip().lower()
+if TTS_PROVIDER not in ("kokoro", "edge", "powershell", "piper"): TTS_PROVIDER = "powershell"
 
 
 class TTSEngine:
@@ -30,7 +31,11 @@ class TTSEngine:
             finally:
                 if on_end: on_end()
 
-        if self.provider in ("edge", "kokoro"):
+        if self.provider == "kokoro":
+            t = threading.Thread(target=_wrapper, args=(self._speak_kokoro,), daemon=True)
+            t.start()
+            if wait: t.join()
+        elif self.provider in ("edge",):
             t = threading.Thread(target=_wrapper, args=(self._speak_edge,), daemon=True)
             t.start()
             if wait: t.join()
@@ -42,6 +47,18 @@ class TTSEngine:
             t = threading.Thread(target=_wrapper, args=(self._speak_powershell,), daemon=True)
             t.start()
             if wait: t.join()
+
+    def _speak_kokoro(self, text: str, on_start_playing=None):
+        """Neural TTS via Kokoro-82M (sherpa-onnx)."""
+        try:
+            if on_start_playing: on_start_playing()
+            from core.tts_kokoro import get_kokoro_tts
+            kokoro = get_kokoro_tts()
+            if not kokoro.speak(text):
+                self._speak_powershell(text, on_start_playing)
+        except Exception as e:
+            logger.error(f"Kokoro failed: {e}")
+            self._speak_powershell(text, on_start_playing)
 
     def _speak_edge(self, text: str, on_start_playing=None):
         """High-quality neural TTS via Microsoft Edge free API."""
