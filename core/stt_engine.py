@@ -208,17 +208,6 @@ class STTEngine:
         from core.stt_parakeet import preprocess_audio
         return preprocess_audio(wav_bytes, target_rms=0.15)
 
-    def _warm_whisper_cpp(self):
-        """Warm whisper.cpp for very short reflex commands when local files exist."""
-        try:
-            from core.stt_whisper_cpp import transcribe, available
-            if available():
-                silence = self._raw_pcm_to_wav(np.zeros(1600, dtype=np.int16).tobytes())
-                transcribe(silence)
-                logger.info("whisper.cpp ready for short commands.")
-        except Exception as e:
-            logger.debug(f"whisper.cpp warm-up skipped: {e}")
-
     def _get_tiny(self):
         if STTEngine._tiny_model is None:
             self._load_tiny()
@@ -278,26 +267,6 @@ class STTEngine:
 
         # Short speech (< 1.5s true speech) → Whisper tiny for instant reflex
         if speech_dur < 1.5:
-            try:
-                from core.stt_whisper_cpp import transcribe as cpp_transcribe, available as cpp_available
-                if cpp_available():
-                    cpp_result = cpp_transcribe(wav_bytes)
-                    if cpp_result:
-                        text, confidence = cpp_result
-                        text = self._clean_text(text)
-                        if not text:
-                            return None
-                        elapsed = time.time() - start
-                        logger.info(f"whisper.cpp: '{text[:60]}' conf={confidence:.2f} in {elapsed:.2f}s")
-                        return STTResult(text=text, words=[], confidence=confidence,
-                                         low_confidence=confidence < LOW_CONF_THRESHOLD,
-                                         low_conf_words=[], model_used="whisper_cpp_tiny",
-                                         duration=speech_dur)
-            except Exception as e:
-                logger.debug(f"whisper.cpp short path skipped: {e}")
-            if STTEngine._tiny_model is None and not SHORT_STT_FALLBACK_LOAD:
-                logger.info("Short STT skipped: whisper.cpp unavailable and tiny model not ready")
-                return None
             return self._fallback_whisper(audio, wav_bytes, speech_dur, start, on_segment)
 
         # ── Parakeet path (primary when configured) ──
