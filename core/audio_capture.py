@@ -43,7 +43,7 @@ ENERGY_THRESHOLD_MULTIPLIER = 1.5
 FALLBACK_RMS_THRESHOLD = 250
 
 # Silero VAD config
-_VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.5"))
+_VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.3"))
 PTT_FAST_VAD = os.getenv("PTT_FAST_VAD", "true").strip().lower() not in ("0", "false", "no")
 
 
@@ -218,15 +218,17 @@ class AudioCapture:
 
     def _is_speech_fast(self, raw_pcm: bytes, noise_threshold: float = FALLBACK_RMS_THRESHOLD) -> bool:
         rms = self._rms(raw_pcm)
-        # Softer energy gate for PTT — pass more to VAD/energy check
-        if rms < noise_threshold * 0.3:
+        # Softer energy gate for PTT
+        if rms < noise_threshold * 0.25:
             return False
         if self.webrtc_vad:
             try:
                 return self.webrtc_vad.is_speech(raw_pcm, SAMPLE_RATE)
             except Exception:
                 pass
-        return rms > noise_threshold
+        # Use ambient noise floor (not multiplier) for fallback threshold
+        floor = self._noise_floor or FALLBACK_RMS_THRESHOLD
+        return rms > floor
 
     def calculate_vibe_urgency(self, wav_bytes: bytes) -> float:
         try:

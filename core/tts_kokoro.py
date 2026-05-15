@@ -6,6 +6,7 @@ Uses sherpa-onnx which bundles espeak-ng phonemizer data.
 import os
 import wave
 import logging
+import threading
 import numpy as np
 import subprocess
 from pathlib import Path
@@ -64,7 +65,8 @@ class KokoroTTS:
             )
             self._tts = sherpa_onnx.OfflineTts(config)
             logger.info("Kokoro TTS ready (sherpa-onnx).")
-            _build_cache(self)
+            # Build cache in background — don't block startup (~19s for 9 phrases)
+            threading.Thread(target=_build_cache, args=(self,), daemon=True).start()
         except Exception as e:
             logger.error(f"Kokoro load failed: {e}")
             self._tts = None
