@@ -50,6 +50,7 @@ STT_MODEL_SHORT = os.getenv("STT_MODEL_SHORT", "base.en").strip()
 STT_MODEL_LONG = os.getenv("STT_MODEL_LONG", "medium.en").strip()
 LONG_PHRASE_THRESHOLD = float(os.getenv("STT_LONG_THRESHOLD", "2.0"))
 LOW_CONF_THRESHOLD = float(os.getenv("STT_LOW_CONF_THRESHOLD", "0.6"))
+PARAKEET_RETRIES = int(os.getenv("PARAKEET_RETRIES", "1"))
 
 REFLEX_PROMPTS = (
     "JARVIS, assistant, computer, hello, hi, thanks, thank you, open, close, "
@@ -96,12 +97,15 @@ class STTEngine:
 
     def __init__(self):
         threading.Thread(target=self._load_tiny, daemon=True).start()
+        threading.Thread(target=self._warm_parakeet, daemon=True).start()
+        threading.Thread(target=self._warm_whisper_cpp, daemon=True).start()
         if STT_PROVIDER == "whisper":
             threading.Thread(target=self._warm_large, daemon=True).start()
         logger.info(
             f"STT: short={STT_MODEL_SHORT}, long={STT_MODEL_LONG}, "
             f"threshold={LONG_PHRASE_THRESHOLD}s, "
-            f"{THREADS} threads, {DEVICE}/{COMPUTE_TYPE}"
+            f"{THREADS} threads, {DEVICE}/{COMPUTE_TYPE}, "
+            f"provider={STT_PROVIDER}"
         )
 
     def _load_tiny(self):
@@ -156,6 +160,49 @@ class STTEngine:
         finally:
             STTEngine._large_ready.set()
 
+    def _warm_parakeet(self):
+        """Pre-warm Parakeet model in background thread.
+        Checks health first, then loads asynchronously."""
+        from core.stt_parakeet import check_parakeet_health, get_parakeet_stt
+        healthy, reason = check_parakeet_health()
+        self._parakeet_healthy = healthy
+        self._parakeet_health_reason = reason
+        if not healthy:
+            logger.warning(f"Parakeet not cached: {reason}")
+            return
+        logger.info("Parakeet model cached — warming up...")
+        try:
+            pk = get_parakeet_stt(lazy=False)
+            if pk.is_loaded():
+                logger.info("Parakeet model ready.")
+            else:
+                logger.error(f"Parakeet load failed: {pk.health()[1]}")
+                self._parakeet_healthy = False
+                self._parakeet_health_reason = pk.health()[1]
+        except Exception as e:
+            logger.error(f"Parakeet warm-up failed: {e}")
+            self._parakeet_healthy = False
+            self._parakeet_health_reason = str(e)
+
+    def _warm_whisper_cpp(self):
+        """Pre-warm whisper.cpp by running a dummy transcription.
+        This loads the model into OS file cache so first real call is ~8ms not ~190ms."""
+        try:
+            from core.stt_whisper_cpp import transcribe, available
+            if available():
+                import numpy as np
+                silence = np.zeros(1600, dtype=np.int16).tobytes()  # 0.1s silence
+                transcribe(silence)
+                logger.info("whisper.cpp pre-warmed.")
+        except Exception as e:
+            logger.debug(f"whisper.cpp warm-up skipped: {e}")
+
+    def _preprocess_audio(self, wav_bytes: bytes) -> bytes:
+        """Lightweight denoising + normalization before STT.
+        Returns processed WAV bytes."""
+        from core.stt_parakeet import preprocess_audio
+        return preprocess_audio(wav_bytes, target_rms=0.15)
+
     def _get_tiny(self):
         if STTEngine._tiny_model is None:
             self._load_tiny()
@@ -182,29 +229,76 @@ class STTEngine:
         if not wav_bytes:
             return None
 
+        # Apply audio preprocessing (noise gate + normalization)
+        wav_bytes = self._preprocess_audio(wav_bytes)
+
+        # Trim leading/trailing silence to get true speech duration
+        from core.stt_parakeet import trim_silence
+        wav_bytes, speech_dur = trim_silence(wav_bytes)
+        if speech_dur <= 0:
+            return None
+        duration = speech_dur
+
         audio = self._decode_audio(wav_bytes)
         if audio is None or audio.size == 0:
             return None
 
-        duration = self._audio_duration(wav_bytes)
+        # Short speech (< 1.5s true speech) → whisper.cpp tiny for fastest reflex
+        if speech_dur < 1.5:
+            from core.stt_whisper_cpp import transcribe as cpp_transcribe, available as cpp_avail
+            if cpp_avail():
+                cpp_result = cpp_transcribe(wav_bytes)
+                if cpp_result:
+                    text, confidence = cpp_result
+                    elapsed = time.time() - start
+                    logger.info(f"whisper.cpp: '{text[:60]}' conf={confidence:.2f} in {elapsed:.2f}s")
+                    return STTResult(text=text, words=[], confidence=confidence,
+                                     low_confidence=confidence < LOW_CONF_THRESHOLD,
+                                     low_conf_words=[], model_used="whisper_cpp_tiny", duration=elapsed)
+            return self._fallback_whisper(audio, wav_bytes, speech_dur, start, on_segment)
 
-        # Parakeet fast path (experimental, falls back to Whisper)
+        # ── Parakeet path (primary when configured) ──
         if STT_PROVIDER == "parakeet":
-            try:
-                from core.stt_parakeet import get_parakeet_stt
-                pk = get_parakeet_stt()
-                if pk and pk._model:
-                    text = pk.transcribe(wav_bytes)
-                    if text:
-                        elapsed = time.time() - start
-                        logger.info(f"Parakeet: '{text[:60]}' in {elapsed:.2f}s")
-                        return STTResult(text=text, words=[], confidence=0.95,
-                                         low_confidence=False, low_conf_words=[],
-                                         model_used="parakeet", duration=elapsed)
-            except Exception:
-                pass
-            logger.info("Parakeet unavailable, using Whisper")
+            from core.stt_parakeet import get_parakeet_stt
 
+            if not hasattr(self, '_parakeet_healthy'):
+                pk = get_parakeet_stt(lazy=True)
+                ready = pk.wait_until_ready(timeout=60.0)
+                if not ready:
+                    logger.warning("Parakeet not ready — falling back to Whisper")
+                    return self._fallback_whisper(audio, wav_bytes, duration, start, on_segment)
+            elif not self._parakeet_healthy:
+                logger.warning(f"Parakeet unhealthy ({self._parakeet_health_reason}) — falling back to Whisper")
+                return self._fallback_whisper(audio, wav_bytes, duration, start, on_segment)
+
+            pk = get_parakeet_stt()
+            last_error = None
+            for attempt in range(1, PARAKEET_RETRIES + 1):
+                try:
+                    result = pk.transcribe(wav_bytes, audio_duration=duration)
+                    if result:
+                        text, confidence = result
+                        elapsed = time.time() - start
+                        logger.info(f"Parakeet: '{text[:60]}' conf={confidence:.2f} in {elapsed:.2f}s")
+                        return STTResult(text=text, words=[], confidence=confidence,
+                                         low_confidence=confidence < LOW_CONF_THRESHOLD,
+                                         low_conf_words=[], model_used="parakeet", duration=elapsed)
+                    last_error = "empty result"
+                except Exception as e:
+                    last_error = str(e)
+                    logger.warning(f"Parakeet attempt {attempt} failed: {e}")
+                    if attempt < PARAKEET_RETRIES:
+                        time.sleep(0.5)
+
+            logger.warning(f"Parakeet failed after {PARAKEET_RETRIES} attempts — falling back to Whisper")
+            return self._fallback_whisper(audio, wav_bytes, duration, start, on_segment)
+
+        return self._fallback_whisper(audio, wav_bytes, duration, start, on_segment)
+
+    def _fallback_whisper(self, audio, wav_bytes: bytes, duration: float, start: float,
+                          on_segment: callable = None) -> Optional[STTResult]:
+        """Whisper fallback path. Used either as primary (STT_PROVIDER=whisper)
+        or as fallback when Parakeet fails."""
         is_long = duration > LONG_PHRASE_THRESHOLD
 
         if is_long:

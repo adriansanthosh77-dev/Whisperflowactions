@@ -51,10 +51,9 @@ class TTSEngine:
     def _speak_kokoro(self, text: str, on_start_playing=None):
         """Neural TTS via Kokoro-82M (sherpa-onnx)."""
         try:
-            if on_start_playing: on_start_playing()
             from core.tts_kokoro import get_kokoro_tts
             kokoro = get_kokoro_tts()
-            if not kokoro.speak(text):
+            if not kokoro.speak(text, on_start=on_start_playing):
                 self._speak_powershell(text, on_start_playing)
         except Exception as e:
             logger.error(f"Kokoro failed: {e}")

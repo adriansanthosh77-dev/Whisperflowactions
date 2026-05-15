@@ -37,9 +37,9 @@ def bench(name, duration_sec):
         print(f"  - Time: {elapsed:.3f}s -> No speech detected (expected with low signal)")
     return elapsed
 
-lat1 = bench("Short Phrase (1s → tiny.en)", 1.0)
-lat2 = bench("Medium Phrase (3s → tiny.en if below threshold)", 3.0)
-lat3 = bench("Long Phrase (8s → medium.en)", 8.0)
+lat1 = bench("Short Phrase (1s -> tiny.en)", 1.0)
+lat2 = bench("Medium Phrase (3s -> tiny.en if below threshold)", 3.0)
+lat3 = bench("Long Phrase (8s -> medium.en)", 8.0)
 
 avg = (lat1 + lat2 + lat3) / 3
 print(f"\nAverage Latency: {avg:.3f}s")

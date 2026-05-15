@@ -39,6 +39,46 @@ DESKTOP_APPS = {
     "vscode", "vs code", "visual studio code", "explorer",
 }
 
+# Pre-compiled regex patterns for _fast_plan hot path
+_R = {
+    "dictate_in":        re.compile(r'^dictate\s+in\s+([a-zA-Z0-9\s]{2,20})$', re.I),
+    "save_as":           re.compile(r'^(?:save as|save this as|name this|call this)\s+(.+)$', re.I),
+    "switch_fast":       re.compile(r"^(?:switch to|switch app to|focus on|switch)\s+(.+)$", re.I),
+    "type_fast":         re.compile(r"^(?:type|dictate|just type|enter)\s+(.+)$", re.I),
+    "remind":            re.compile(r"^(?:remind me|set a reminder|set reminder)\s+in\s+(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\s+(?:to|that|about)\s+(.+)$", re.I),
+    "open_search":       re.compile(r"^(?:open|go to|launch|execute|run)\s+(.+?)\s+(?:and\s+)?(?:search(?: for)?|find|look up)\s+(.+)$", re.I),
+    "find_page":         re.compile(r"^(?:find on page|find in page|search this page for|find text)\s+(.+)$", re.I),
+    "find_my":           re.compile(r"^(?:find|locate)\s+(?:my\s+|the\s+)(.+)$", re.I),
+    "plain_search":      re.compile(r"^(?:search(?: for)?|find(?!\s+(?:file|folder|document))|look up)\s+(.+?)(?:\s+(?:on|in|at)\s+(.+))?$", re.I),
+    "ordinal_click":     re.compile(r"^(?:click|open|select|hit)\s+(?:the\s+)?(first|second|third|fourth|fifth|last)\s+(.+)$", re.I),
+    "send_message":      re.compile(r"^(draft|send|write)\s+(?:a\s+)?(?:message|email|mail|whatsapp)?\s*(?:to|for)\s+(.+?)\s+(?:saying|that says|with message|message)\s+(.+)$", re.I),
+    "chat_wake":         re.compile(r"^(?:hey|hello|hi|wake up|morning|afternoon|evening)\s+jarvis.*$", re.I),
+    "chat_greeting":     re.compile(r"^(?:hello|hi|hey|greetings|morning|afternoon|evening)(?:\s+jarvis)?.*$", re.I),
+    "chat_identity":     re.compile(r"^.*(?:who\s+are\s+you|what\s+is\s+your\s+name|describe\s+yourself).*$", re.I),
+    "chat_status":       re.compile(r"^.*(?:how\s+are\s+you|how's\s+it\s+going).*$", re.I),
+    "chat_voice_desc":   re.compile(r"^.*(?:describe\s+my\s+voice|what\s+do\s+i\s+sound\s+like).*$", re.I),
+    "chat_gratitude":    re.compile(r"^.*(?:thank\s+you|thanks|cheers|nice one).*$", re.I),
+    "chat_reflex":       re.compile(r"^(write\s+this\s+back|draft\s+a\s+message|grammar\s+correct|correct\s+this|reply)\s*[:\s]\s*(.+)$", re.I),
+    "switch_url":        re.compile(r"^(?:switch to|switch app to|go to|focus on)\s+(.+)$", re.I),
+    "launch":            re.compile(r"^(?:launch|start|open app|open)\s+(.+)$", re.I),
+    "file_type_suffix":  re.compile(r"^(?:open|launch|show|find|search(?: for)?|go to)\s+(.+?)\s+(?:file|folder|document|dir|directory)$", re.I),
+    "file_type_prefix":  re.compile(r"^(?:open|launch|show|find|search(?: for)?|go to)\s+(?:file|folder|document|dir|directory)\s+(.+)$", re.I),
+    "screenshot":        re.compile(r"^(?:take screenshot|screenshot|capture screen)$", re.I),
+    "download":          re.compile(r"^(?:download|save|get)\s+(?:the\s+|my\s+|his\s+|her\s+|this\s+)?(?:photo|image|file|video|it|picture)$", re.I),
+    "paste_folder":      re.compile(r"^(?:paste|copy\s+in|copy\s+and\s+paste\s+in|save\s+in|move\s+to)\s+(?:the\s+)?(?:it\s+in\s+|this\s+in\s+)?(.+?)\s+(?:folder|dir|directory)$", re.I),
+    "paste":             re.compile(r"^(?:paste)(?:\s+(.+))?$", re.I),
+    "copy":              re.compile(r"^(?:copy)(?:\s+(.+))?$", re.I),
+    "rename_dual":       re.compile(r"^(?:rename|name)\s+(.+?)\s+(?:to|as|into)\s+(.+)$", re.I),
+    "rename_single":     re.compile(r"^(?:rename|name)\s+(?:this|it|the selected item)?\s*(?:to|as|into)\s+(.+)$", re.I),
+    "describe_screen":   re.compile(r"^(?:what is on|describe|look at|see|show me)\s+(?:the\s+|my\s+)?(?:screen|monitor|desktop|it)$", re.I),
+    "switch_generic":    re.compile(r"^(?:switch|next|change)\s+(?:window|app|tab)$", re.I),
+    "guarded":           re.compile(r"^(delete|kill|run command|install)\s+(.+)$", re.I),
+    "open_that":         re.compile(r"^(?:open|show)\s+(?:it|that|the\s+screenshot)$", re.I),
+    "open_only":         re.compile(r"^(?:open|go to|launch|execute|run)\s+(.+)$", re.I),
+    "type_only":         re.compile(r"^(?:type|enter)\s+(.+)$", re.I),
+    "click":             re.compile(r"^(?:click|press|tap)\s+(.+)$", re.I),
+}
+
 
 def _resolve_ollama_model() -> str:
     global _OLLAMA_MODEL_CACHE
@@ -99,7 +139,7 @@ def teach_reflex(trigger: str, operation: str, extra: dict = None):
 
 
 # ── Fuzzy Matching Engine ─────────────────────────────────────────────────
-def _fuzzy_match(query: str, keys: list, cutoff: float = 75.0) -> Optional[str]:
+def _fuzzy_match(query: str, keys: list, cutoff: float = 87.0) -> Optional[str]:
     """Find the closest matching reflex key using rapidfuzz."""
     if not keys:
         return None
@@ -248,7 +288,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
     if t in ("stop dictation", "end dictation", "exit dictation"):
         return [IntentResult("dictation_mode", "pc", "", {"operation": "stop", "safety_level": "safe"}, 0.99, raw)]
 
-    dictate_in = re.match(r'^dictate\s+in\s+([a-z0-9\s]{2,20})$', t, re.I)
+    dictate_in = _R["dictate_in"].match(raw)
     if dictate_in:
         app = dictate_in.group(1).strip().lower()
         return [
@@ -269,7 +309,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
         msg = f"Captured {result['count']} steps. Say 'save as [name]' to name this workflow."
         return [IntentResult("chat_reflex", "pc", "", {"mode": "teach_save_prompt", "text": msg, "steps": result['steps'], "safety_level": "safe"}, 0.99, raw)]
 
-    save_match = re.match(r'^(?:save as|save this as|name this|call this)\s+(.+)$', t)
+    save_match = _R["save_as"].match(raw)
     if save_match:
         trigger_name = save_match.group(1).strip()
         msg = tm.save_manual_workflow(trigger_name, tm.recorded_steps if tm.recorded_steps else [])
@@ -295,10 +335,9 @@ def _fast_plan(text: str) -> list[IntentResult]:
 
     # Pattern: "switch to discord", "go to chrome"
     # Pattern: "switch to discord", "focus on chrome" (NO "go to" here to avoid folder ambiguity)
-    switch_match = re.match(r"^(?:switch to|switch app to|focus on|switch)\s+(.+)$", t)
+    switch_match = _R["switch_fast"].match(raw)
     if switch_match:
         app = _clean_app_name(switch_match.group(1))
-        # ... same logic ...
         if app not in ("window", "app", "tab"):
             return [
                 IntentResult(
@@ -311,7 +350,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
 
 
     # Pattern: "type Hello World"
-    dictation_match = re.match(r"^(?:type|dictate|just type|enter)\s+(.+)$", raw, re.I)
+    dictation_match = _R["type_fast"].match(raw)
     if dictation_match:
         content = dictation_match.group(1).strip()
         return [
@@ -329,10 +368,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
         ]
 
     # Pattern: "remind me in 10 minutes to check the oven"
-    remind_match = re.match(
-        r"^(?:remind me|set a reminder|set reminder)\s+in\s+(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\s+(?:to|that|about)\s+(.+)$",
-        raw, re.I
-    )
+    remind_match = _R["remind"].match(raw)
     if remind_match:
         amount = int(remind_match.group(1))
         unit = remind_match.group(2).lower()
@@ -360,10 +396,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
         logger.info("Complex command detected (conjunctions) — passing to Full Planner.")
         return []
 
-    open_search = re.match(
-        r"^(?:open|go to|launch|execute|run)\s+(.+?)\s+(?:and\s+)?(?:search(?: for)?|find|look up)\s+(.+)$",
-        t,
-    )
+    open_search = _R["open_search"].match(raw)
     if open_search:
         app = _clean_app_name(open_search.group(1))
         query = open_search.group(2).strip(" .")
@@ -383,7 +416,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             ),
         ]
 
-    find_page_match = re.match(r"^(?:find on page|find in page|search this page for|find text)\s+(.+)$", raw, re.I)
+    find_page_match = _R["find_page"].match(raw)
     if find_page_match:
         text_to_find = find_page_match.group(1).strip(" .")
         return [
@@ -397,10 +430,19 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    plain_search = re.match(
-        r"^(?:search(?: for)?|find(?!\s+(?:file|folder|document))|look up)\s+(.+?)(?:\s+(?:on|in|at)\s+(.+))?$", 
-        t, re.I
-    )
+    find_my_match = _R["find_my"].match(raw)
+    if find_my_match and not find_page_match:
+        query = find_my_match.group(1).strip()
+        if len(query) > 2:
+            return [
+                IntentResult(
+                    "pc_action", "pc", query,
+                    {"operation": "find_file", "query": query, "safety_level": "safe"},
+                    0.92, raw,
+                )
+            ]
+
+    plain_search = _R["plain_search"].match(raw)
     if plain_search:
         query = plain_search.group(1).strip(" .")
         app_suffix = plain_search.group(2)
@@ -435,7 +477,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
     # 3. Ordinal Browser Click (Reflex)
-    ordinal_match = re.match(r"^(?:click|open|select|hit)\s+(?:the\s+)?(first|second|third|fourth|fifth|last)\s+(.+)$", t, re.I)
+    ordinal_match = _R["ordinal_click"].match(raw)
     if ordinal_match:
         ordinal = ordinal_match.group(1).lower()
         target = ordinal_match.group(2).strip()
@@ -447,11 +489,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    message_match = re.match(
-        r"^(draft|send|write)\s+(?:a\s+)?(?:message|email|mail|whatsapp)?\s*(?:to|for)\s+(.+?)\s+(?:saying|that says|with message|message)\s+(.+)$",
-        raw,
-        re.I,
-    )
+    message_match = _R["send_message"].match(raw)
     if message_match:
         verb = message_match.group(1).lower()
         target = message_match.group(2).strip(" .")
@@ -470,15 +508,15 @@ def _fast_plan(text: str) -> list[IntentResult]:
 
     # --- Conversational Reflexes ---
     chat_patterns = {
-        r"^(?:hey|hello|hi|wake up|morning|afternoon|evening)\s+jarvis.*$": "wake_routine",
-        r"^(?:hello|hi|hey|greetings|morning|afternoon|evening)(?:\s+jarvis)?.*$": "greeting",
-        r"^.*(?:who\s+are\s+you|what\s+is\s+your\s+name|describe\s+yourself).*$": "identity",
-        r"^.*(?:how\s+are\s+you|how's\s+it\s+going).*$": "status",
-        r"^.*(?:describe\s+my\s+voice|what\s+do\s+i\s+sound\s+like).*$": "voice_description",
-        r"^.*(?:thank\s+you|thanks|cheers|nice one).*$": "gratitude",
+        _R["chat_wake"]: "wake_routine",
+        _R["chat_greeting"]: "greeting",
+        _R["chat_identity"]: "identity",
+        _R["chat_status"]: "status",
+        _R["chat_voice_desc"]: "voice_description",
+        _R["chat_gratitude"]: "gratitude",
     }
     for pattern, topic in chat_patterns.items():
-        if re.match(pattern, t, re.I):
+        if pattern.match(t):
             return [
                 IntentResult(
                     "chat",
@@ -491,11 +529,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             ]
 
     # --- Chat / Writing Reflexes ---
-    chat_reflex_match = re.match(
-        r"^(write\s+this\s+back|draft\s+a\s+message|grammar\s+correct|correct\s+this|reply)\s*[:\s]\s*(.+)$",
-        raw,
-        re.I,
-    )
+    chat_reflex_match = _R["chat_reflex"].match(raw)
     if chat_reflex_match:
         trigger = chat_reflex_match.group(1).lower()
         content = chat_reflex_match.group(2).strip()
@@ -668,8 +702,6 @@ def _fast_plan(text: str) -> list[IntentResult]:
         "open claude": ("launch_app", {"app": "", "url": "https://claude.ai"}),
         "open gemini": ("launch_app", {"app": "", "url": "https://gemini.google.com"}),
         "open figma": ("launch_app", {"app": "", "url": "https://figma.com"}),
-        "brightness up": ("brightness_up", {}),
-        "brightness down": ("brightness_down", {}),
         "display settings": ("launch_app", {"app": "ms-settings:display"}),
         "wifi settings": ("launch_app", {"app": "ms-settings:network-wifi"}),
         "bluetooth settings": ("launch_app", {"app": "ms-settings:bluetooth"}),
@@ -739,6 +771,36 @@ def _fast_plan(text: str) -> list[IntentResult]:
         "resource monitor": ("launch_app", {"app": "resmon"}),
         "system properties": ("launch_app", {"app": "control", "args": "sysdm.cpl"}),
 
+        # --- File & Clipboard (Premium) ---
+        "clipboard history": ("hotkey", {"keys": ["win", "v"]}),
+        "show clipboard": ("hotkey", {"keys": ["win", "v"]}),
+        "recent files": ("open_recent", {}),
+        "recent documents": ("open_recent", {}),
+
+        # --- Shell Folders ---
+        "open recycle bin": ("launch_app", {"app": "shell:RecycleBinFolder"}),
+        "open this pc": ("launch_app", {"app": "shell:MyComputerFolder"}),
+
+        # --- System Info ---
+        "who am i": ("get_current_user", {}),
+        "current user": ("get_current_user", {}),
+        "who is logged in": ("get_current_user", {}),
+        "my ip": ("get_ip_address", {}),
+        "ip address": ("get_ip_address", {}),
+        "what is my ip": ("get_ip_address", {}),
+        "screen resolution": ("get_screen_resolution", {}),
+
+        # --- Utilities ---
+        "empty recycle bin": ("empty_recycle_bin", {}),
+        "empty trash": ("empty_recycle_bin", {}),
+        "take a break": ("break_timer", {}),
+
+        # --- Display ---
+        "night light": ("toggle_night_light", {}),
+        "blue light": ("toggle_night_light", {}),
+        "focus mode": ("toggle_focus_assist", {}),
+        "do not disturb": ("toggle_focus_assist", {}),
+
         # --- System Status (Premium) ---
         "check battery": ("get_battery_status", {}),
         "battery level": ("get_battery_status", {}),
@@ -774,6 +836,14 @@ def _fast_plan(text: str) -> list[IntentResult]:
         result = _reflex_result(operation, extra, 0.96)
         return [_apply_context(result, _CURRENT_CONTEXT)]
 
+    # --- Plugin Reflexes ---
+    from core.plugin_manager import get_plugin_manager
+    _plugin_reflexes = get_plugin_manager().get_reflex_keys()
+    if t in _plugin_reflexes:
+        operation, extra = _plugin_reflexes[t]
+        result = _reflex_result(operation, extra, 0.96)
+        return [_apply_context(result, _CURRENT_CONTEXT)]
+
     # --- Learned Reflexes (Teach Mode) ---
     learned = _load_learned_reflexes()
     if t in learned:
@@ -789,12 +859,14 @@ def _fast_plan(text: str) -> list[IntentResult]:
     if t in unsupported_reflexes:
         return []
 
-    # --- Fuzzy Matching (Makes 201 reflexes act like 1000+) ---
-    all_keys = list(pc_reflexes.keys()) + list(learned.keys())
+    # --- Fuzzy Matching ---
+    all_keys = list(pc_reflexes.keys()) + list(learned.keys()) + list(_plugin_reflexes.keys())
     fuzzy_hit = _fuzzy_match(t, all_keys)
     if fuzzy_hit:
         if fuzzy_hit in pc_reflexes:
             operation, extra = pc_reflexes[fuzzy_hit]
+        elif fuzzy_hit in _plugin_reflexes:
+            operation, extra = _plugin_reflexes[fuzzy_hit]
         else:
             entry = learned[fuzzy_hit].copy()
             operation = entry.pop("operation", "launch_app")
@@ -802,9 +874,16 @@ def _fast_plan(text: str) -> list[IntentResult]:
         result = _reflex_result(operation, extra, 0.85)
         return [_apply_context(result, _CURRENT_CONTEXT)]
 
-    switch_match = re.match(r"^(?:switch to|switch app to|go to|focus on)\s+(.+)$", t)
+    switch_match = _R["switch_url"].match(raw)
     if switch_match:
         app = _clean_app_name(switch_match.group(1))
+        # If it looks like a URL, navigate there instead of switching windows
+        if "." in app and not app.endswith(" "):
+            return [
+                IntentResult(
+                    "open_app", app, app, {}, 0.96, raw,
+                )
+            ]
         return [
             IntentResult(
                 "pc_action",
@@ -816,9 +895,16 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    launch_match = re.match(r"^(?:launch|start|open app|open)\s+(.+)$", t)
+    launch_match = _R["launch"].match(raw)
     if launch_match:
         app = _clean_app_name(launch_match.group(1))
+        # If it looks like a URL, open it directly
+        if "." in app and not app.endswith(" "):
+            return [
+                IntentResult(
+                    "open_app", app, app, {}, 0.96, raw,
+                )
+            ]
         # Known common local executables
         common_apps = (
             "notepad", "calculator", "paint", "cmd", "terminal", "powershell", 
@@ -850,9 +936,9 @@ def _fast_plan(text: str) -> list[IntentResult]:
             ]
 
     # Pattern: [verb] [target] [type] -> "open games folder"
-    file_type_suffix = re.match(r"^(?:open|launch|show|find|search(?: for)?|go to)\s+(.+?)\s+(?:file|folder|document|dir|directory)$", t, re.I)
+    file_type_suffix = _R["file_type_suffix"].match(raw)
     # Pattern: [verb] [type] [target] -> "open folder games"
-    file_type_prefix = re.match(r"^(?:open|launch|show|find|search(?: for)?|go to)\s+(?:file|folder|document|dir|directory)\s+(.+)$", t, re.I)
+    file_type_prefix = _R["file_type_prefix"].match(raw)
     
     match = file_type_suffix or file_type_prefix
     if match:
@@ -868,11 +954,11 @@ def _fast_plan(text: str) -> list[IntentResult]:
         ]
 
 
-    screenshot_match = re.match(r"^(?:take screenshot|screenshot|capture screen)$", t)
+    screenshot_match = _R["screenshot"].match(raw)
     if screenshot_match:
         return [IntentResult("pc_action", "pc", "", {"operation": "screenshot", "safety_level": "safe"}, 0.95, raw)]
 
-    download_match = re.match(r"^(?:download|save|get)\s+(?:the\s+|my\s+|his\s+|her\s+|this\s+)?(?:photo|image|file|video|it|picture)$", t, re.I)
+    download_match = _R["download"].match(raw)
     if download_match:
         return [
             IntentResult(
@@ -885,7 +971,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    paste_folder_match = re.match(r"^(?:paste|copy\s+in|copy\s+and\s+paste\s+in|save\s+in|move\s+to)\s+(?:the\s+)?(?:it\s+in\s+|this\s+in\s+)?(.+?)\s+(?:folder|dir|directory)$", t, re.I)
+    paste_folder_match = _R["paste_folder"].match(raw)
     if paste_folder_match:
         folder = paste_folder_match.group(1).strip()
         return [
@@ -899,7 +985,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    paste_match = re.match(r"^(?:paste)(?:\s+(.+))?$", raw, re.I)
+    paste_match = _R["paste"].match(raw)
     if paste_match:
         text_to_paste = (paste_match.group(1) or "").strip()
         return [
@@ -913,7 +999,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    copy_match = re.match(r"^(?:copy)(?:\s+(.+))?$", raw, re.I)
+    copy_match = _R["copy"].match(raw)
     if copy_match:
         text_to_copy = (copy_match.group(1) or "").strip()
         return [
@@ -927,10 +1013,9 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    rename_match = re.match(r"^(?:rename|name)\s+(.+?)\s+(?:to|as|into)\s+(.+)$", t, re.I)
+    rename_match = _R["rename_dual"].match(raw)
     if not rename_match:
-        # Fallback for "rename to X" (implicitly renaming the selection)
-        rename_match = re.match(r"^(?:rename|name)\s+(?:this|it|the selected item)?\s*(?:to|as|into)\s+(.+)$", t, re.I)
+        rename_match = _R["rename_single"].match(raw)
     
     if rename_match:
         # If it was the two-part match, group 2 is the new name. If it was the fallback, group 1 is the new name.
@@ -951,15 +1036,15 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    vision_match = re.match(r"^(?:what is on|describe|look at|see|show me)\s+(?:the\s+|my\s+)?(?:screen|monitor|desktop|it)$", t, re.I)
+    vision_match = _R["describe_screen"].match(raw)
     if vision_match:
         return [IntentResult("describe_screen", "pc", "", {"query": "describe the whole screen"}, 0.98, raw)]
 
-    switch_match = re.match(r"^(?:switch|next|change)\s+(?:window|app|tab)$", t)
+    switch_match = _R["switch_generic"].match(raw)
     if switch_match:
         return [IntentResult("pc_action", "pc", "", {"operation": "switch_window", "safety_level": "safe"}, 0.94, raw)]
 
-    guarded_match = re.match(r"^(delete|kill|run command|install)\s+(.+)$", raw, re.I)
+    guarded_match = _R["guarded"].match(raw)
     if guarded_match:
         verb = guarded_match.group(1).lower()
         target = guarded_match.group(2).strip()
@@ -981,7 +1066,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    open_it_match = re.match(r"^(?:open|show)\s+(?:it|that|the\s+screenshot)$", t, re.I)
+    open_it_match = _R["open_that"].match(raw)
     if open_it_match:
         return [
             IntentResult(
@@ -994,7 +1079,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    open_only = re.match(r"^(?:open|go to|launch|execute|run)\s+(.+)$", t)
+    open_only = _R["open_only"].match(raw)
     if open_only:
         app = _clean_app_name(open_only.group(1))
         if app in DESKTOP_APPS:
@@ -1010,7 +1095,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             ]
         return [IntentResult("open_app", app, app, {}, 0.98, raw)]
 
-    type_match = re.match(r"^(?:type|enter)\s+(.+)$", raw, re.I)
+    type_match = _R["type_only"].match(raw)
     if type_match:
         value = type_match.group(1).strip()
         return [
@@ -1024,7 +1109,7 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
-    click_match = re.match(r"^(?:click|press|tap)\s+(.+)$", raw, re.I)
+    click_match = _R["click"].match(raw)
     if click_match:
         target = click_match.group(1).strip(" .")
         key_targets = {"enter", "tab", "escape", "backspace"}

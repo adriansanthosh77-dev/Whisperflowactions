@@ -17,6 +17,7 @@ import subprocess
 import threading
 import tkinter as tk
 from enum import Enum
+from typing import Optional, Callable
 
 import websockets
 
@@ -28,6 +29,7 @@ class State(Enum):
     LISTENING = "listening"
     THINKING = "thinking"
     EXECUTING = "executing"
+    TEACHING = "teaching"
     SUCCESS = "success"
     ERROR = "error"
     SPEAKING = "speaking"
@@ -38,6 +40,7 @@ STATE_CONFIG = {
     State.LISTENING: {"icon": "*", "text": "Listening...", "color": "#4CAF50"},
     State.THINKING: {"icon": "...", "text": "Thinking...", "color": "#2196F3"},
     State.EXECUTING: {"icon": ">", "text": "Executing...", "color": "#FF9800"},
+    State.TEACHING: {"icon": "T", "text": "Teaching...", "color": "#9C27B0"},
     State.SUCCESS: {"icon": "OK", "text": "Done", "color": "#00ff88"},
     State.ERROR: {"icon": "!", "text": "Error", "color": "#F44336"},
     State.SPEAKING: {"icon": "V", "text": "Vocalizing", "color": "#ffaa00"},
@@ -45,7 +48,7 @@ STATE_CONFIG = {
 
 
 class Overlay:
-    def __init__(self):
+    def __init__(self, wake_callback: Optional[Callable] = None):
         self.current_state = State.IDLE
         self.detail = ""
         self.clients = set()
@@ -58,6 +61,42 @@ class Overlay:
         self._fallback_window = None
         self._electron_process = None
         self._first_wake_done = False
+        self._stop_signal = False
+        self._wake_callback = wake_callback
+        self._oww_model = None
+        atexit.register(self.stop)
+
+    async def _run_wake_word(self):
+        """Wake word detection in the same async loop as the WS server."""
+        try:
+            from openwakeword.model import Model
+            import openwakeword
+            openwakeword.utils.download_models()
+            self._oww_model = Model(wakeword_models=["hey_jarvis"])
+            logger.info("openWakeWord ready in overlay loop.")
+        except Exception as e:
+            logger.warning(f"openWakeWord in overlay failed: {e}")
+            return
+
+        try:
+            import sounddevice as sd, numpy as np
+            WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.5"))
+            with sd.RawInputStream(samplerate=16000, blocksize=1280,
+                                   channels=1, dtype='int16') as stream:
+                while not self._stop_signal:
+                    raw, _ = await asyncio.get_event_loop().run_in_executor(
+                        None, stream.read, 1280
+                    )
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, self._oww_model.predict, np.frombuffer(raw, dtype=np.int16)
+                    )
+                    scores = list(self._oww_model.prediction_buffer["hey_jarvis"])
+                    if scores[-1] > WAKE_THRESHOLD:
+                        logger.info(f"Wake word detected (score={scores[-1]:.2f})")
+                        if self._wake_callback:
+                            self._wake_callback()
+        except Exception:
+            pass
 
     async def _ws_handler(self, websocket):
         self.clients.add(websocket)
@@ -85,7 +124,9 @@ class Overlay:
     async def _run_server(self):
         async with websockets.serve(self._ws_handler, "127.0.0.1", 9223):
             self._ready.set()
-            await asyncio.Future()
+            # Run wake word detection as a concurrent task in the same event loop
+            wake_task = asyncio.create_task(self._run_wake_word())
+            await asyncio.gather(asyncio.Future(), wake_task)
 
     def _start_server(self):
         asyncio.set_event_loop(self.loop)
@@ -133,6 +174,9 @@ class Overlay:
         
         logger.info(f"Launching Electron HUD with: {cmd}")
 
+        # Pass parent PID so Electron can self-terminate if Python dies
+        cmd = cmd + [f"--parent-pid={os.getpid()}"]
+
         try:
             creation_flags = 0
             if os.name == 'nt':
@@ -147,7 +191,7 @@ class Overlay:
                 stderr=subprocess.DEVNULL,
             )
 
-            logger.info("Electron HUD launched.")
+            logger.info("Electron HUD launched (PID: {os.getpid()}, parent monitor active).")
             return True
         except Exception as e:
             logger.error("Failed to launch Electron HUD: %s", e)
@@ -163,13 +207,16 @@ class Overlay:
 
     def stop(self):
         logger.info("Stopping HUD...")
+        self._stop_signal = True
         if self._electron_process:
             try:
                 import ctypes
                 kernel32 = ctypes.windll.kernel32
                 kernel32.TerminateProcess(int(self._electron_process._handle), 1)
+                self._electron_process.wait(timeout=3)
             except Exception:
                 pass
+            self._electron_process = None
         if self.root:
             try:
                 self.root.destroy()
@@ -186,6 +233,37 @@ class Overlay:
                 except Exception:
                     self.clients.discard(client)
 
+        if self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(broadcast(), self.loop)
+
+    def set_audio_energy(self, energy: float):
+        """Send mic audio level to the HUD for live visualizer."""
+        async def broadcast():
+            msg = json.dumps({"type": "energy", "value": min(1.0, energy / 2000.0)})
+            for client in list(self.clients):
+                try:
+                    await client.send(msg)
+                except Exception:
+                    self.clients.discard(client)
+
+        if self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(broadcast(), self.loop)
+
+    def send_teach_step(self, step_num: int, total: int, action: str, target: str):
+        """Send live teach capture progress to HUD."""
+        async def broadcast():
+            msg = json.dumps({
+                "type": "teach_step",
+                "step": step_num,
+                "total": total,
+                "action": action,
+                "target": target[:60],
+            })
+            for client in list(self.clients):
+                try:
+                    await client.send(msg)
+                except Exception:
+                    self.clients.discard(client)
         if self.loop.is_running():
             asyncio.run_coroutine_threadsafe(broadcast(), self.loop)
 
@@ -363,8 +441,8 @@ class Overlay:
             return False
 
 
-def run_overlay_in_thread() -> Overlay:
-    overlay = Overlay()
+def run_overlay_in_thread(wake_callback=None) -> Overlay:
+    overlay = Overlay(wake_callback=wake_callback)
     thread = threading.Thread(target=overlay.run, daemon=True)
     thread.start()
     overlay._ready.wait(timeout=5)

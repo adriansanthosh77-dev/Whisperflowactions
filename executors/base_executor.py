@@ -263,6 +263,14 @@ class BaseExecutor:
           document.addEventListener("click", (ev) => {
             const el = ev.target.closest("a,button,input,textarea,[role='button'],[contenteditable='true']");
             if (!el) return;
+            const origOutline = el.style.outline;
+            const origOutlineOffset = el.style.outlineOffset;
+            el.style.outline = "2px solid #9C27B0";
+            el.style.outlineOffset = "2px";
+            setTimeout(() => {
+              el.style.outline = origOutline;
+              el.style.outlineOffset = origOutlineOffset;
+            }, 600);
             window.__jarvisTeachEvents.push({
               type: "click",
               selector: selectorFor(el),

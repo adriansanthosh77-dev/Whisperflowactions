@@ -59,6 +59,7 @@
         .state-listening { --accent-color: var(--color-listening); }
         .state-thinking { --accent-color: var(--color-thinking); }
         .state-executing { --accent-color: var(--color-executing); }
+        .state-teaching { --accent-color: #9C27B0; }
         .state-speaking { --accent-color: var(--color-speaking); }
         .state-success { --accent-color: var(--color-success); }
         .state-error { --accent-color: var(--color-error); }
@@ -66,6 +67,20 @@
         @keyframes breathe { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.2); } }
         .state-thinking .glass-orb { animation: think-pulse 1s infinite alternate; }
         @keyframes think-pulse { 0% { transform: rotate(-3deg); } 100% { transform: rotate(3deg); } }
+        .state-teaching .glass-orb { animation: teach-glow 1.5s ease-in-out infinite; }
+        @keyframes teach-glow {
+            0%, 100% { filter: brightness(1) drop-shadow(0 0 5px #9C27B0); }
+            50% { filter: brightness(1.3) drop-shadow(0 0 25px #9C27B0); }
+        }
+        #teach-panel { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+            width: 90%; max-height: 120px; overflow-y: auto; z-index: 20;
+            font-family: var(--font-sub); font-size: 10px; color: #9C27B0;
+            background: rgba(0,0,0,0.7); border: 1px solid rgba(156,39,176,0.3);
+            border-radius: 4px; padding: 6px 10px; display: none; }
+        #teach-panel.visible { display: block; }
+        #teach-panel .step-item { opacity: 0; transition: opacity 0.3s ease-in; padding: 1px 0; }
+        #teach-panel .step-item.visible { opacity: 1; }
+        .mini #teach-panel { display: none !important; }
         canvas#electron-mesh { position: absolute; top: 0; left: 0; width: 100%; height: 100%; mix-blend-mode: screen; }
     </style>
 </head>
@@ -80,6 +95,7 @@
                 <div id="title">JARVIS</div>
                 <div id="subtitle">SYSTEM IDLE</div>
             </div>
+            <div id="teach-panel"></div>
         </div>
     </div>
     <script>
@@ -120,7 +136,7 @@
             if (isNaN(targetEnergy)) targetEnergy = 0;
             audioEnergy += (targetEnergy - audioEnergy) * 0.15;
             const accent = getComputedStyle(document.body).getPropertyValue('--accent-color').trim() || '#00ff88';
-            const speed = (['thinking','listening','executing','speaking','error'].includes(document.body.className.replace('state-',''))) ? 3.5 : 1;
+            const speed = (['thinking','listening','executing','teaching','speaking','error'].includes(document.body.className.replace('state-',''))) ? 3.5 : 1;
             particles.forEach((p, i) => {
                 let f = speed * (1 + Math.min(audioEnergy, 1.5) * 4);
                 p.x += p.vx * f; p.y += p.vy * f;
@@ -135,7 +151,7 @@
                     let p2 = particles[j];
                     let dx = p.x - p2.x, dy = p.y - p2.y;
                     let d = dx * dx + dy * dy;
-                    let maxD = (['listening','speaking'].includes(document.body.className.replace('state-',''))) ? 12100 : 10000;
+                    let maxD = (['listening','speaking','teaching'].includes(document.body.className.replace('state-',''))) ? 12100 : 10000;
                     if (d < maxD) {
                         let dist = Math.sqrt(d);
                         ctx.beginPath(); ctx.strokeStyle = accent;
@@ -161,6 +177,7 @@
                 listening: ["LISTENING", "AWAITING AUDIO"],
                 thinking: ["PROCESSING", "NEURAL LINK"],
                 executing: ["EXECUTING", "OVERRIDE"],
+                teaching: ["TEACHING", "RECORDING ACTIONS"],
                 speaking: ["VOCALIZING", "OUTPUT ACTIVE"],
                 success: ["SUCCESS", "TASK COMPLETE"],
                 error: ["ERROR", "SYSTEM FAULT"]
@@ -168,6 +185,9 @@
             const t = texts[state.toLowerCase()] || ["JARVIS", ""];
             title.textContent = t[0];
             subtitle.textContent = message || t[1];
+            // Clear teach panel on any state change
+            document.getElementById('teach-panel').classList.remove('visible');
+            document.getElementById('teach-panel').innerHTML = '';
         }
 
         let ws;
@@ -178,6 +198,18 @@
             ws.onmessage = (event) => {
                 const d = JSON.parse(event.data);
                 if (d.type === 'state') updateState(d.state, d.message, d.fullscreen);
+                else if (d.type === 'teach_step') {
+                    const panel = document.getElementById('teach-panel');
+                    panel.classList.add('visible');
+                    const item = document.createElement('div');
+                    item.className = 'step-item';
+                    const action = d.action || '?';
+                    const target = (d.target || '').length > 45 ? (d.target || '').slice(0, 42) + '...' : (d.target || '');
+                    item.textContent = d.step + '. ' + action + ' -> ' + target;
+                    panel.appendChild(item);
+                    requestAnimationFrame(() => item.classList.add('visible'));
+                    panel.scrollTop = panel.scrollHeight;
+                }
             };
         }
         connect();

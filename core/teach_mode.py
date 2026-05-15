@@ -178,9 +178,9 @@ class TeachMode:
             return self.workflows[t]
 
         # Fuzzy match against workflow triggers
-        import difflib
+        import rapidfuzz
         keys = list(self.workflows.keys())
-        matches = difflib.get_close_matches(t, keys, n=1, cutoff=0.80)
+        matches = rapidfuzz.process.extractOne(t, keys, score_cutoff=87.0)
         if matches:
             matched = matches[0]
             logger.info(f"TeachMode: Fuzzy matched workflow '{t}' -> '{matched}'")

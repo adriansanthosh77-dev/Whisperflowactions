@@ -15,6 +15,7 @@ All I/O is non-blocking via threads. Target latency: <3s to first action.
 import sys
 import os
 import time
+import atexit
 import signal
 import logging
 import threading
@@ -67,6 +68,9 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 # ── Destructive intents requiring confirmation ────────────────────────────
 CONFIRM_INTENTS = {"send_message", "reply_professionally"}
 
+# ── Wake word threshold (0.0‑1.0; lower = more sensitive, higher = fewer false triggers) ──
+WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.5"))
+
 
 class JARVISOrchestrator:
     def __init__(self):
@@ -85,7 +89,7 @@ class JARVISOrchestrator:
         self.intent_sequencer = IntentSequencer()
         logger.info("IntentSequencer loaded")
 
-        self.audio    = AudioCapture()
+        self.audio    = AudioCapture(energy_callback=lambda e: self.overlay.set_audio_energy(e))
         self.stt      = get_stt_engine()
         self.tts      = get_tts_engine()
         self.planner  = Planner()
@@ -97,7 +101,7 @@ class JARVISOrchestrator:
         self.feedback = FeedbackStore()
         self.memory   = get_memory()
         self.telemetry = get_telemetry()
-        self.overlay  = run_overlay_in_thread()
+        self.overlay  = run_overlay_in_thread(wake_callback=lambda: self._on_hotkey_wake())
 
         self._listening = False
         self._dictation_active = False
@@ -105,6 +109,10 @@ class JARVISOrchestrator:
         self._lock = threading.Lock()
         self._history = []
         self._first_wake_done = False
+        self._pipeline_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=os.cpu_count() or 4,
+            thread_name_prefix="jarvis_pipeline",
+        )
 
         # The browser will launch automatically on the first web-related command.
         logger.info("Browser Status: On-Demand (Will launch when needed)")
@@ -147,7 +155,6 @@ class JARVISOrchestrator:
 
         logger.info("JARVIS ready. Hold Shift to talk. Ctrl+Shift+Space for text. ESC to abort.")
         self._start_sleep_timer()
-        self._start_wake_word_listener()
         
         start_overwatch(self._on_proactive_trigger)
 
@@ -163,6 +170,19 @@ class JARVISOrchestrator:
 
         # Register block handler for browser automation
         BaseExecutor.set_block_handler(self._default_block_handler)
+
+        # Load plugins
+        from core.plugin_manager import get_plugin_manager
+        self._plugin_manager = get_plugin_manager()
+        self._plugin_manager.load_all()
+
+        # Ensure HUD is killed on abrupt exit (belt-and-suspenders with Job Object)
+        atexit.register(self._kill_hud)
+
+    def _kill_hud(self):
+        """Force-kill the HUD Electron process on abrupt exit."""
+        if hasattr(self, 'overlay'):
+            self.overlay.stop()
 
     def stop(self):
         """Shutdown all JARVIS components."""
@@ -220,32 +240,6 @@ class JARVISOrchestrator:
             msg = f"I noticed you're on {suggestion}. Would you like some help?"
             self.overlay.set_state(State.IDLE, f"💡 {suggestion}")
             self.tts.say(msg)
-
-    def _start_wake_word_listener(self):
-        """Background thread for wake word detection."""
-        def _kws_loop():
-            logger.info("Always-on mic active. Listening for wake word...")
-            while not self._abort_flag:
-                try:
-                    if not self._listening:
-                        import sounddevice as sd, numpy as np
-                        chunk = sd.rec(int(16000 * 0.2), samplerate=16000, channels=1, dtype='int16')
-                        sd.wait()
-                        rms = float(np.sqrt(np.mean(chunk.astype(float)**2)))
-                        if rms > 200:
-                            audio_data = self.audio.record_until_silence()
-                            if audio_data and len(audio_data) > 4800:
-                                result = self.stt.transcribe(audio_data)
-                                text = result.text if result else ""
-                                if text and any(w in text.lower()
-                                               for w in ["hey jarvis", "wake up jarvis", "hello jarvis"]):
-                                    logger.info(f"Wake word: '{text}'")
-                                    self._on_hotkey_wake()
-                except Exception:
-                    pass
-                time.sleep(0.5)
-
-        threading.Thread(target=_kws_loop, daemon=True).start()
 
     def _start_reminder_checker(self):
         def _check():
@@ -376,7 +370,7 @@ class JARVISOrchestrator:
                 app="pc",
                 target=text,
                 data={"operation": "type", "text": text},
-                confidence=1.0,
+                confidence=result.confidence,
                 raw_text=text,
             )
             success, msg = self.router.route(step, ctx)
@@ -402,8 +396,8 @@ class JARVISOrchestrator:
             
             # START PREDICATIVE CONTEXT COLLECTION in background while user talks
             # This captures the DOM and URL while the user is still speaking.
-            ctx_future = concurrent.futures.ThreadPoolExecutor(max_workers=1).submit(self.context.collect)
-            
+            ctx_future = self._pipeline_pool.submit(self.context.collect)
+
             wav_bytes = self.audio.record_until_silence(push_to_talk=True)
             if self._abort_flag: 
                 self.overlay.set_state(State.IDLE, "Aborted")
@@ -417,29 +411,34 @@ class JARVISOrchestrator:
             t_audio = time.time()
             logger.info(f"Audio captured in {t_audio - t_start:.2f}s")
 
-            # ── 2. MASSIVE PARALLEL: STT + Context collection ──────────
+            # ── 2. FIRE STT IMMEDIATELY (doesn't depend on context) ──
             if self._abort_flag: return
             self.overlay.set_state(State.THINKING, "Processing...")
 
-            # Use all available cores for the parallel sprint
-            cpu_count = os.cpu_count() or 4
-            with concurrent.futures.ThreadPoolExecutor(max_workers=cpu_count) as executor:
-                stt_future = executor.submit(self.stt.transcribe, wav_bytes)
+            stt_future = self._pipeline_pool.submit(self.stt.transcribe, wav_bytes)
 
-                stt_result = stt_future.result(timeout=300)
-                ctx = ctx_future.result(timeout=300)
+            # Wait for STT (context collection finishes independently)
+            stt_result = stt_future.result(timeout=300)
             if self._abort_flag: return
 
             t_parallel = time.time()
             if not stt_result:
                 logger.info(f"STT returned no text in {t_parallel - t_audio:.2f}s")
                 self.overlay.set_state(State.ERROR, "No speech detected")
-                time.sleep(0.5)
-                self.overlay.set_state(State.IDLE)
-                return
+                self.tts.say("I didn't catch that. Could you repeat it?")
+                time.sleep(0.3)
+                wav_bytes = self.audio.record_until_silence(push_to_talk=True)
+                if wav_bytes:
+                    stt_result = self.stt.transcribe(wav_bytes)
+                if not stt_result:
+                    self.overlay.set_state(State.IDLE)
+                    return
+
+            # Get context (it's been collecting in parallel this whole time)
+            ctx = ctx_future.result(timeout=300)
 
             text = stt_result.text
-            logger.info(f"STT + Context ready in {t_parallel - t_audio:.2f}s → '{text}'")
+            logger.info(f"STT ready in {t_parallel - t_audio:.2f}s → '{text}'")
 
             lower_text = text.lower().strip()
             if lower_text in ("start dictation", "begin dictation", "dictation mode"):
@@ -486,6 +485,29 @@ class JARVISOrchestrator:
                 self._listening = False
 
     def _execute_text(self, text: str, ctx: Context):
+        # ── SPLIT COMPOUND COMMANDS (e.g. "volume up then mute") ──
+        import re
+        parts = re.split(r"\s+(?:and\s+)?then\s+|\s*,\s*then\s+|\s+and\s+then\s+|\s*;\s*", text.strip(), flags=re.I)
+        if len(parts) > 1:
+            logger.info(f"Compound command: {len(parts)} parts")
+            overall = True
+            for i, part in enumerate(parts):
+                p = part.strip()
+                if not p:
+                    continue
+                if i > 0:
+                    self.tts.say(f"Next: {p[:60]}", wait=True)
+                if self._abort_flag:
+                    break
+                ok = self._execute_single(p, ctx)
+                if not ok:
+                    overall = False
+                    break
+            return overall
+
+        return self._execute_single(text, ctx)
+
+    def _execute_single(self, text: str, ctx: Context):
         # ── 3. Streaming plan execution ──────────────────────────────
         self.overlay.set_state(State.THINKING, "Planning...")
 
@@ -830,7 +852,7 @@ class JARVISOrchestrator:
 
     def _teach_flow(self, text: str, mode: str = "manual"):
         """Unified teaching workflow with naming, replay, and approval."""
-        self.overlay.set_state(State.EXECUTING, f"Teaching ({mode})")
+        self.overlay.set_state(State.TEACHING, f"Teaching ({mode})")
         
         # 1. Capture actions
         if mode == "manual":
@@ -909,6 +931,13 @@ class JARVISOrchestrator:
             while not stop_event.is_set():
                 try:
                     BaseExecutor.poll_teach_capture()
+                    # Broadcast latest captured step to HUD
+                    events = getattr(BaseExecutor, '_teach_events', [])
+                    if events:
+                        last = events[-1]
+                        action = last.get("type", "?")
+                        target = last.get("label") or last.get("url") or last.get("key") or last.get("selector", "")
+                        self.overlay.send_teach_step(len(events), 0, action, target)
                 except Exception as e:
                     logger.debug("Teach capture poll failed: %s", e)
                 time.sleep(0.5)
@@ -1059,40 +1088,43 @@ class JARVISOrchestrator:
 
         # We'll use a set to track pressed keys for the PTT (Push-To-Talk) behavior
         pressed_keys = set()
-        
-        # Define our activation keys
-        TRIGGER_KEYS = {keyboard.Key.ctrl_l, keyboard.Key.ctrl_r, keyboard.Key.space}
-        
+
         def on_press(key):
             if key == keyboard.Key.esc:
+                self._dictation_active = False
                 self.abort_execution()
                 return
 
             if key in pressed_keys:
                 return
             pressed_keys.add(key)
-            
-            # Check for Ctrl+Shift+Space
+
             is_ctrl = keyboard.Key.ctrl_l in pressed_keys or keyboard.Key.ctrl_r in pressed_keys
             is_shift = keyboard.Key.shift in pressed_keys or keyboard.Key.shift_r in pressed_keys
+            is_pause = keyboard.Key.pause in pressed_keys or key == keyboard.Key.pause
             is_space = hasattr(key, 'char') and key.char == ' '
-            
+
+            # Ctrl+Shift+D = toggle dictation
             if is_ctrl and is_shift and hasattr(key, 'char') and key.char and key.char.lower() == 'd':
                 self._toggle_dictation()
-            elif is_ctrl and is_shift and is_space:
+                return
+            # Ctrl+Shift+Space = text mode
+            if is_ctrl and is_shift and is_space:
                 self._on_text_hotkey()
-            elif is_shift and not is_ctrl and not self._listening:
+                return
+            # Pause/Break OR Shift = voice mode
+            if (is_pause or is_shift) and not is_ctrl and not self._listening:
                 self._on_hotkey()
 
         def on_release(key):
             if key in pressed_keys:
                 pressed_keys.remove(key)
             if self._listening:
-                if key in {keyboard.Key.shift, keyboard.Key.shift_r}:
-                    logger.info("Shift released. Stopping recording...")
+                if key in {keyboard.Key.shift, keyboard.Key.shift_r, keyboard.Key.pause}:
+                    logger.info(f"PTT released ({key}). Stopping recording...")
                     self.audio.stop()
 
-        logger.info("Hotkeys: Hold Shift = voice | Ctrl+Shift+Space = text")
+        logger.info("Hotkeys: Hold Pause/Break (or Shift) = voice | Ctrl+Shift+Space = text")
         with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
             try:
                 listener.join()

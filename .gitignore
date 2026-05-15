@@ -17,11 +17,14 @@ build/
 node_modules/
 .hud-node/
 ui/hud/node_modules/
+package-lock.json
 
 # Data & Runtime
 data/
 *.db
 *.sqlite3
+*.db-journal
+*.db-wal
 
 # Browser profile (auto-generated)
 jarvis_profile/
@@ -51,6 +54,11 @@ scratch/
 
 # OpenCode
 .opencode/
+
+# Temp / scratch
+scratch/
+*.txt
+improvements.txt
 
 # OS
 .DS_Store

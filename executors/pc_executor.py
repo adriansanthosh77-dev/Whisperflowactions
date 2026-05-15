@@ -55,10 +55,12 @@ SAFE_OPERATIONS = {
     "volume_up", "volume_down", "volume_mute", "fullscreen",
     "undo", "redo", "select_all", "save_file", "text_bold", "text_italic",
     "open_desktop", "open_downloads", "open_documents", "open_pictures", "open_videos",
-    "open_music", "open_task_manager", "open_settings", "lock_pc",
+    "open_music", "open_recent", "open_task_manager", "open_settings", "lock_pc",
     "scroll_down", "scroll_up", "page_down", "page_up", "go_to_top", "go_to_bottom",
     "brightness_up", "brightness_down", "wait", "chat_reflex",
-    "get_battery_status", "get_current_time", "get_system_health", "get_current_date"
+    "get_battery_status", "get_current_time", "get_system_health", "get_current_date",
+    "get_current_user", "get_ip_address", "get_screen_resolution",
+    "empty_recycle_bin", "break_timer", "toggle_night_light", "toggle_focus_assist",
 }
 
 APP_COMMANDS = {
@@ -111,7 +113,10 @@ class PCExecutor:
         if op in FORBIDDEN_OPERATIONS or safety == "forbidden":
             return False, f"Refused forbidden PC action: {op}"
         if op not in SAFE_OPERATIONS and op not in CONFIRM_OPERATIONS:
-            return False, f"Refused unknown PC action: {op}"
+            # Check plugin operations before rejecting
+            from core.plugin_manager import get_plugin_manager
+            if not get_plugin_manager().get_operation_handler(op):
+                return False, f"Refused unknown PC action: {op}"
         if op in CONFIRM_OPERATIONS and safety != "confirm":
             return False, f"Refused guarded PC action without confirmation policy: {op}"
 
@@ -142,6 +147,9 @@ class PCExecutor:
                 platform_close()
                 return ExecutionResult(True, "Closed current window.").as_tuple()
             if op == "switch_window":
+                target = intent.target or intent.data.get("target") or ""
+                if target:
+                    return self._switch_to_window(target).as_tuple()
                 return self._hotkey(["alt", "tab"], "Switched window.").as_tuple()
             if op == "minimize_window":
                 platform_minimize()
@@ -213,7 +221,7 @@ class PCExecutor:
                 return self._hotkey(["ctrl", "b"], "Toggled bold.").as_tuple()
             if op == "text_italic":
                 return self._hotkey(["ctrl", "i"], "Toggled italic.").as_tuple()
-            if op in ("open_desktop", "open_downloads", "open_documents", "open_pictures", "open_videos", "open_music"):
+            if op in ("open_desktop", "open_downloads", "open_documents", "open_pictures", "open_videos", "open_music", "open_recent"):
                 return self._open_known_folder(op).as_tuple()
             if op == "open_task_manager":
                 return self._hotkey(["ctrl", "shift", "escape"], "Opened Task Manager.").as_tuple()
@@ -230,7 +238,8 @@ class PCExecutor:
             if op == "go_to_bottom":
                 return self._press("end").as_tuple()
             if op in ("brightness_up", "brightness_down"):
-                return self._open_settings(IntentResult("pc_action", "pc", "", {"page": "display"}, 1.0, intent.raw_text)).as_tuple()
+                delta = 10 if op == "brightness_up" else -10
+                return self._adjust_brightness(delta).as_tuple()
             if op == "wait":
                 seconds = min(float(intent.data.get("seconds", 1)), 10.0)
                 time.sleep(seconds)
@@ -251,6 +260,25 @@ class PCExecutor:
                 return self._get_current_date().as_tuple()
             if op == "get_system_health":
                 return self._get_system_health().as_tuple()
+            if op == "get_current_user":
+                return self._get_current_user().as_tuple()
+            if op == "get_ip_address":
+                return self._get_ip_address().as_tuple()
+            if op == "get_screen_resolution":
+                return self._get_screen_resolution().as_tuple()
+            if op == "empty_recycle_bin":
+                return self._empty_recycle_bin().as_tuple()
+            if op == "break_timer":
+                return self._break_timer().as_tuple()
+            if op == "toggle_night_light":
+                return self._toggle_night_light().as_tuple()
+            if op == "toggle_focus_assist":
+                return self._toggle_focus_assist().as_tuple()
+            # Check plugin operations
+            from core.plugin_manager import get_plugin_manager
+            plugin_handler = get_plugin_manager().get_operation_handler(op)
+            if plugin_handler:
+                return plugin_handler(intent, context)
             return False, f"Unknown PC action: {op}"
         except Exception as e:
             logger.exception("PC action failed: %s", e)
@@ -461,6 +489,10 @@ class PCExecutor:
             os.startfile(app)
             return ExecutionResult(True, f"Opened {app}.")
 
+        if app.startswith("shell:") and IS_WINDOWS:
+            os.startfile(app)
+            return ExecutionResult(True, f"Opened {app}.")
+
         if platform_launch(app):
             if url:
                 import webbrowser
@@ -543,23 +575,88 @@ class PCExecutor:
             "open_videos": Path.home() / "Videos",
             "open_music": Path.home() / "Music",
         }
-        path = folder_map[op]
-        try:
-            if IS_WINDOWS:
-                os.startfile(str(path))
-            elif IS_MAC:
-                subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            elif IS_LINUX:
-                subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return ExecutionResult(True, f"Opened {path.name}.", observed_state={"path": str(path)})
-        except Exception as e:
-            return ExecutionResult(False, f"Failed to open {path.name}: {e}")
+        path = folder_map.get(op)
+        if path:
+            try:
+                if IS_WINDOWS:
+                    os.startfile(str(path))
+                elif IS_MAC:
+                    subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif IS_LINUX:
+                    subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return ExecutionResult(True, f"Opened {path.name}.", observed_state={"path": str(path)})
+            except Exception as e:
+                return ExecutionResult(False, f"Failed to open {path.name}: {e}")
+
+        # Special shell folders (Windows)
+        if op == "open_recent" and IS_WINDOWS:
+            os.startfile("shell:recent")
+            return ExecutionResult(True, "Opened Recent files.")
+        if op == "open_recent" and IS_MAC:
+            recent = Path.home() / "Library" / "Recent"
+            if recent.exists():
+                subprocess.Popen(["open", str(recent)])
+                return ExecutionResult(True, "Opened Recent files.")
+
+        return ExecutionResult(False, f"Unknown folder: {op}")
 
     def _open_settings(self, intent: IntentResult) -> ExecutionResult:
         page = (intent.data.get("page") or "").strip().lower()
         url = f"ms-settings:{page}" if page else "ms-settings:"
         os.startfile(url)
         return ExecutionResult(True, f"Opened Settings{f' ({page})' if page else ''}.")
+
+    def _switch_to_window(self, target: str) -> ExecutionResult:
+        """Bring a named window to the foreground."""
+        import subprocess
+        target_lower = target.strip().lower()
+        if not target_lower:
+            return self._hotkey(["alt", "tab"], "Switched window.")
+
+        if IS_WINDOWS:
+            try:
+                ps_cmd = (
+                    "$p = Get-Process | Where-Object { $_.MainWindowTitle -like '*" + target_lower + "*' } | "
+                    "Select-Object -First 1; "
+                    "if ($p) { "
+                    "  Add-Type -AssemblyName Microsoft.VisualBasic; "
+                    "  [Microsoft.VisualBasic.Interaction]::AppActivate($p.Id) | Out-Null; "
+                    "  Write-Output $p.MainWindowTitle "
+                    "}"
+                )
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.stdout.strip():
+                    return ExecutionResult(True, f"Switched to {result.stdout.strip()}.")
+            except Exception:
+                pass
+
+        return self._hotkey(["alt", "tab"], f"Switched window.")
+
+    def _adjust_brightness(self, delta: int) -> ExecutionResult:
+        """Adjust screen brightness by delta using native WMI on Windows."""
+        if IS_WINDOWS:
+            try:
+                ps_cmd = (
+                    "$mon = Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness; "
+                    "$current = $mon.CurrentBrightness; "
+                    "$new = [Math]::Min(100, [Math]::Max(0, $current + {delta})); "
+                    "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $new) | Out-Null; "
+                    "Write-Output $new"
+                ).format(delta=delta)
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    return ExecutionResult(True, f"Brightness adjusted by {delta}.")
+            except Exception as e:
+                logger.warning(f"Native brightness failed: {e}")
+
+        # Fallback: open Settings
+        return self._open_settings(IntentResult("pc_action", "pc", "", {"page": "display"}, 1.0, "")).as_tuple()
 
     def _type_text(self, intent: IntentResult) -> ExecutionResult:
         text = intent.data.get("text") or intent.target
@@ -613,6 +710,82 @@ class PCExecutor:
     def _get_system_health(self) -> ExecutionResult:
         cpu = platform_cpu()
         return ExecutionResult(True, f"System Health: CPU usage is at {cpu:.1f}%.", observed_state={"cpu_usage": cpu})
+
+    def _get_current_user(self) -> ExecutionResult:
+        user = os.getenv("USERNAME") or os.getenv("USER") or "Unknown"
+        return ExecutionResult(True, f"Current user is {user}.", observed_state={"user": user})
+
+    def _get_ip_address(self) -> ExecutionResult:
+        import subprocess
+        try:
+            if IS_WINDOWS:
+                result = subprocess.run(["powershell", "-NoProfile", "-Command",
+                    "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.InterfaceAlias -ne 'Loopback'}).IPAddress"],
+                    capture_output=True, text=True, timeout=10)
+                ips = [ip.strip() for ip in result.stdout.strip().splitlines() if ip.strip()]
+                if ips:
+                    return ExecutionResult(True, f"IP address: {ips[0]}", observed_state={"ip": ips[0]})
+            elif IS_MAC:
+                result = subprocess.run(["ipconfig", "getifaddr", "en0"], capture_output=True, text=True, timeout=5)
+                if result.stdout.strip():
+                    return ExecutionResult(True, f"IP address: {result.stdout.strip()}")
+            elif IS_LINUX:
+                result = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=5)
+                ip = result.stdout.strip().split()[0] if result.stdout.strip() else ""
+                if ip:
+                    return ExecutionResult(True, f"IP address: {ip}")
+        except Exception as e:
+            logger.warning(f"IP lookup failed: {e}")
+        return ExecutionResult(False, "Could not determine IP address.")
+
+    def _get_screen_resolution(self) -> ExecutionResult:
+        try:
+            import pyautogui
+            w, h = pyautogui.size()
+            return ExecutionResult(True, f"Screen resolution is {w}x{h}.", observed_state={"width": w, "height": h})
+        except ImportError:
+            pass
+        if IS_WINDOWS:
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                w, h = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+                return ExecutionResult(True, f"Screen resolution is {w}x{h}.")
+            except Exception:
+                pass
+        return ExecutionResult(False, "Could not determine screen resolution.")
+
+    def _empty_recycle_bin(self) -> ExecutionResult:
+        if IS_WINDOWS:
+            try:
+                import subprocess
+                ps_cmd = "(New-Object -ComObject Shell.Application).Namespace(0xa).Items() | ForEach-Object { $_.InvokeVerb('delete') }"
+                subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, timeout=30)
+                return ExecutionResult(True, "Emptied recycle bin.")
+            except Exception as e:
+                return ExecutionResult(False, f"Failed to empty recycle bin: {e}")
+        return ExecutionResult(False, "Recycle bin only available on Windows.")
+
+    def _break_timer(self) -> ExecutionResult:
+        import threading
+        def _remind():
+            time.sleep(300)
+            from core.tts_engine import get_tts_engine
+            get_tts_engine().say("Break time! Take a moment to rest your eyes.")
+        threading.Thread(target=_remind, daemon=True).start()
+        return ExecutionResult(True, "I'll remind you to take a break in 5 minutes.")
+
+    def _toggle_night_light(self) -> ExecutionResult:
+        if IS_WINDOWS:
+            os.startfile("ms-settings:nightlight")
+            return ExecutionResult(True, "Opened night light settings.")
+        return ExecutionResult(False, "Night light only available on Windows.")
+
+    def _toggle_focus_assist(self) -> ExecutionResult:
+        if IS_WINDOWS:
+            os.startfile("ms-settings:quietmomentshome")
+            return ExecutionResult(True, "Opened focus assist settings.")
+        return ExecutionResult(False, "Focus assist only available on Windows.")
 
     def _screenshot(self) -> ExecutionResult:
         out_dir = Path("data/screenshots")

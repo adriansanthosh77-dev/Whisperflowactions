@@ -62,12 +62,12 @@ test("Fuzzy: 'scrll down'",           "scrll down",       "pc_action")
 
 # --- PHASE 3: Smart Fallback (unknown but parseable) ---
 print("\n[PHASE 3] SMART FALLBACK (no reflex, no AI, pure regex)")
-test("Fallback: 'open spotify.com'",  "open spotify.com", "pc_action")
+test("Fallback: 'open spotify.com'",  "open spotify.com", "open_app")
 test("Fallback: 'search for puppies'","search for puppies","browser_action")
 test("Fallback: 'google best laptops'","google best laptops","browser_action")
 test("Fallback: 'click the login button'", "click the login button", "browser_action")
 test("Fallback: 'type hello world'",  "type hello world", "pc_action")
-test("Fallback: 'go to reddit.com'",  "go to reddit.com", "browser_action")
+test("Fallback: 'go to reddit.com'",  "go to reddit.com", "open_app")
 
 # --- PHASE 4: Multi-Step (Split & Conquer, no AI) ---
 print("\n[PHASE 4] MULTI-STEP COMMANDS (Split & Conquer, no AI)")

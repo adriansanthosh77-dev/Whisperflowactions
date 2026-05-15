@@ -64,20 +64,32 @@ class KokoroTTS:
             )
             self._tts = sherpa_onnx.OfflineTts(config)
             logger.info("Kokoro TTS ready (sherpa-onnx).")
+            _build_cache(self)
         except Exception as e:
             logger.error(f"Kokoro load failed: {e}")
             self._tts = None
 
-    def speak(self, text: str, speed: float = 1.2) -> bool:
+    def speak(self, text: str, speed: float = 1.2, on_start=None, on_end=None) -> bool:
         if not self._tts:
             return False
+        temp_wav = Path("bin/kokoro/speech.wav")
+        temp_wav.parent.mkdir(parents=True, exist_ok=True)
+
+        # Check pre-cache first — instant playback, no generation
+        if play_cached(text, temp_wav, on_start, on_end):
+            return True
+        # Check if text starts with a cached phrase
+        for phrase in _CACHED_PHRASES:
+            if text.startswith(phrase) and phrase in _TTS_CACHE:
+                if play_cached(phrase, temp_wav, on_start, on_end):
+                    return True
+
         try:
             result = self._tts.generate(text, sid=0, speed=speed)
             samples = np.array(result.samples, dtype=np.float64)
             samples = (samples * 32767).astype(np.int16)
             if len(samples) == 0:
                 return False
-            temp_wav = Path("bin/kokoro/speech.wav")
             temp_wav.parent.mkdir(parents=True, exist_ok=True)
             with wave.open(str(temp_wav), "wb") as wf:
                 wf.setnchannels(1)
@@ -85,21 +97,28 @@ class KokoroTTS:
                 wf.setframerate(result.sample_rate)
                 wf.writeframes(samples.tobytes())
             if temp_wav.exists():
-                # Try winsound (always available on Windows Python)
                 try:
                     import winsound
-                    winsound.PlaySound(str(temp_wav), winsound.SND_FILENAME | winsound.SND_ASYNC)
+                    if on_start:
+                        on_start()
+                    winsound.PlaySound(str(temp_wav), winsound.SND_FILENAME)
+                    if on_end:
+                        on_end()
                     return True
                 except Exception:
                     pass
                 # Fallback: PowerShell System.Media
                 try:
+                    if on_start:
+                        on_start()
                     ps_cmd = (
                         f"Add-Type -AssemblyName System.Media; "
                         f"$player = New-Object System.Media.SoundPlayer('{temp_wav}'); "
                         f"$player.PlaySync()"
                     )
                     subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, timeout=30)
+                    if on_end:
+                        on_end()
                     return True
                 except Exception:
                     pass
@@ -109,6 +128,62 @@ class KokoroTTS:
 
 
 _KOKORO_INSTANCE = None
+
+# ── TTS Pre-cache for instant common responses ──
+_TTS_CACHE: dict[str, tuple] = {}
+_CACHED_PHRASES = [
+    "Executing",
+    "Done",
+    "All tasks completed",
+    "I didn't catch that",
+    "Could you repeat it?",
+    "Task aborted",
+    "Cancelled",
+    "Listening",
+    "One moment",
+]
+
+
+def _build_cache(kokoro):
+    """Pre-generate common TTS responses at boot so they play instantly."""
+    if not kokoro or not kokoro._tts:
+        return
+    import time
+    t0 = time.time()
+    for phrase in _CACHED_PHRASES:
+        try:
+            result = kokoro._tts.generate(phrase, sid=0, speed=1.2)
+            if result and len(result.samples) > 0:
+                _TTS_CACHE[phrase] = (np.array(result.samples, dtype=np.float64),
+                                      result.sample_rate)
+        except Exception:
+            pass
+    logger.info(f"TTS cache: {len(_TTS_CACHE)}/{len(_CACHED_PHRASES)} phrases cached in {time.time()-t0:.1f}s")
+
+
+def play_cached(phrase: str, temp_wav: Path, on_start=None, on_end=None) -> bool:
+    """Play a pre-cached phrase instantly without generation."""
+    entry = _TTS_CACHE.get(phrase)
+    if entry is None:
+        return False
+    samples, sr = entry
+    samples_int = (samples * 32767).astype(np.int16)
+    with wave.open(str(temp_wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(samples_int.tobytes())
+    try:
+        import winsound
+        if on_start:
+            on_start()
+        winsound.PlaySound(str(temp_wav), winsound.SND_FILENAME)
+        if on_end:
+            on_end()
+        return True
+    except Exception:
+        return False
+
 
 def get_kokoro_tts() -> KokoroTTS:
     global _KOKORO_INSTANCE

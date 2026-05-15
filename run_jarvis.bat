@@ -9,6 +9,9 @@ echo         JARVIS - Just A Rather Very Intelligent System
 echo ==================================================================
 echo.
 
+:: Kill any leftover Electron HUD from previous run
+taskkill /f /fi "WINDOWTITLE eq JARVIS*" /im electron.exe >nul 2>&1
+
 :: Check venv
 if not exist "venv\Scripts\python.exe" (
     echo [FAIL] Virtual environment not found.

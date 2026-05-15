@@ -26,19 +26,24 @@ print("=" * 60)
 print()
 
 # ── 1. TTS ──────────────────────────────────────────────────────
-print("[1] Ryan Voice (edge-tts)")
+print("[1] TTS Engine")
 def tts_test():
     from core.tts_engine import get_tts_engine
     tts = get_tts_engine()
-    assert tts.provider in ("edge", "powershell")
-    import edge_tts, asyncio
-    async def gen():
-        c = edge_tts.Communicate("JARVIS system test.", "en-GB-RyanNeural")
-        await c.save("test_ryan_voice.wav")
-        sz = os.path.getsize("test_ryan_voice.wav")
-        assert sz > 1000, f"Audio too small: {sz}"
-    asyncio.run(gen())
-test("Ryan voice generates audio", tts_test)
+    assert tts.provider in ("edge", "powershell", "kokoro", "piper")
+    # Test edge-tts output if available
+    try:
+        import edge_tts, asyncio
+        async def gen():
+            c = edge_tts.Communicate("JARVIS system test.", "en-GB-RyanNeural")
+            await c.save("test_ryan_voice.wav")
+            sz = os.path.getsize("test_ryan_voice.wav")
+            assert sz > 1000, f"Audio too small: {sz}"
+        asyncio.run(gen())
+    except ImportError:
+        # edge_tts not installed — verify engine loads without crash
+        pass
+test(f"TTS engine loads ({os.getenv('TTS_PROVIDER', 'default')})", tts_test)
 
 # ── 2. STT ──────────────────────────────────────────────────────
 print("[2] STT (faster-whisper)")
@@ -58,43 +63,43 @@ def stt_test():
 test("STT processes audio without crash", stt_test)
 
 # ── 3. ALL 57 REFLEXES ──────────────────────────────────────────
-print("[3] All 57 Reflexes")
+CMDS = [
+    ("minimize window", "pc_action"),("maximize window", "pc_action"),
+    ("close window", "pc_action"),("switch window", "pc_action"),
+    ("snap left", "pc_action"),("snap right", "pc_action"),
+    ("show desktop", "pc_action"),("take a screenshot", "pc_action"),
+    ("lock pc", "pc_action"),("brightness up", "pc_action"),
+    ("brightness down", "pc_action"),("check battery", "pc_action"),
+    ("what time is it", "pc_action"),("current time", "pc_action"),
+    ("today's date", "pc_action"),("how is the pc", "pc_action"),
+    ("play", "pc_action"),("pause", "pc_action"),("play pause", "pc_action"),
+    ("next track", "pc_action"),("previous track", "pc_action"),
+    ("volume up", "pc_action"),("volume down", "pc_action"),
+    ("mute", "pc_action"),("fullscreen", "pc_action"),
+    ("copy", "pc_action"),("paste", "pc_action"),("undo", "pc_action"),
+    ("redo", "pc_action"),("select all", "pc_action"),("save", "pc_action"),
+    ("find", "pc_action"),("open calculator", "pc_action"),
+    ("open notepad", "pc_action"),("open cmd", "pc_action"),
+    ("open terminal", "pc_action"),("open powershell", "pc_action"),
+    ("open settings", "pc_action"),("task manager", "pc_action"),
+    ("open youtube", "pc_action"),("open google", "pc_action"),
+    ("open gmail", "pc_action"),("open github", "pc_action"),
+    ("open reddit", "pc_action"),("open amazon", "pc_action"),
+    ("open netflix", "pc_action"),("open spotify", "pc_action"),
+    ("open chatgpt", "pc_action"),("open claude", "pc_action"),
+    ("hello", "chat"),("who are you", "chat"),("thank you", "chat"),
+    ("scroll down", "pc_action"),("scroll up", "pc_action"),
+    ("go to top", "pc_action"),("go to bottom", "pc_action"),
+]
+print(f"[3] All {len(CMDS)} Reflexes")
 def all_reflexes():
     from core.planner import Planner
     p = Planner()
-    cmds = [
-        ("minimize window", "pc_action"),("maximize window", "pc_action"),
-        ("close window", "pc_action"),("switch window", "pc_action"),
-        ("snap left", "pc_action"),("snap right", "pc_action"),
-        ("show desktop", "pc_action"),("take a screenshot", "pc_action"),
-        ("lock pc", "pc_action"),("brightness up", "pc_action"),
-        ("brightness down", "pc_action"),("check battery", "pc_action"),
-        ("what time is it", "pc_action"),("current time", "pc_action"),
-        ("today's date", "pc_action"),("how is the pc", "pc_action"),
-        ("play", "pc_action"),("pause", "pc_action"),("play pause", "pc_action"),
-        ("next track", "pc_action"),("previous track", "pc_action"),
-        ("volume up", "pc_action"),("volume down", "pc_action"),
-        ("mute", "pc_action"),("fullscreen", "pc_action"),
-        ("copy", "pc_action"),("paste", "pc_action"),("undo", "pc_action"),
-        ("redo", "pc_action"),("select all", "pc_action"),("save", "pc_action"),
-        ("find", "pc_action"),("open calculator", "pc_action"),
-        ("open notepad", "pc_action"),("open cmd", "pc_action"),
-        ("open terminal", "pc_action"),("open powershell", "pc_action"),
-        ("open settings", "pc_action"),("task manager", "pc_action"),
-        ("open youtube", "pc_action"),("open google", "pc_action"),
-        ("open gmail", "pc_action"),("open github", "pc_action"),
-        ("open reddit", "pc_action"),("open amazon", "pc_action"),
-        ("open netflix", "pc_action"),("open spotify", "pc_action"),
-        ("open chatgpt", "pc_action"),("open claude", "pc_action"),
-        ("hello", "chat"),("who are you", "chat"),("thank you", "chat"),
-        ("scroll down", "pc_action"),("scroll up", "pc_action"),
-        ("go to top", "pc_action"),("go to bottom", "pc_action"),
-    ]
-    for cmd, expected in cmds:
+    for cmd, expected in CMDS:
         results = list(p.plan(cmd, {}))
         assert results, f"No plan for '{cmd}'"
         assert results[0].intent == expected, f"'{cmd}'={results[0].intent}"
-test(f"{len(cmds)}/{len(cmds)} reflexes correct", all_reflexes)
+test(f"{len(CMDS)}/{len(CMDS)} reflexes correct", all_reflexes)
 
 # ── 4. PC EXECUTION ─────────────────────────────────────────────
 print("[4] PC Executor (live)")
@@ -157,8 +162,12 @@ def orch():
         assert success, f"Pipeline failed '{cmd}'"
     o.tts.say("Test complete. All systems operational.", wait=False)
     o.overlay.stop()
-    import subprocess
-    subprocess.run(["taskkill","/f","/pid",str(o.overlay._electron_process.pid)], capture_output=True)
+    try:
+        import subprocess
+        if hasattr(o.overlay, '_electron_process') and o.overlay._electron_process:
+            subprocess.run(["taskkill","/f","/pid",str(o.overlay._electron_process.pid)], capture_output=True)
+    except Exception:
+        pass
 test("Orchestrator pipeline end-to-end", orch)
 
 print()
