@@ -1102,6 +1102,9 @@ class JARVISOrchestrator:
             is_ctrl = keyboard.Key.ctrl_l in pressed_keys or keyboard.Key.ctrl_r in pressed_keys
             is_shift = keyboard.Key.shift in pressed_keys or keyboard.Key.shift_r in pressed_keys
             is_pause = keyboard.Key.pause in pressed_keys or key == keyboard.Key.pause
+            # Also check KeyCode-based Pause (some keyboards send VK_PAUSE=0x13 as plain KeyCode)
+            if not is_pause and hasattr(key, 'vk') and key.vk == 19:
+                is_pause = True
             is_space = hasattr(key, 'char') and key.char == ' '
 
             # Ctrl+Shift+D = toggle dictation
@@ -1120,7 +1123,10 @@ class JARVISOrchestrator:
             if key in pressed_keys:
                 pressed_keys.remove(key)
             if self._listening:
-                if key in {keyboard.Key.shift, keyboard.Key.shift_r, keyboard.Key.pause}:
+                is_pause_release = key in {keyboard.Key.shift, keyboard.Key.shift_r, keyboard.Key.pause}
+                if not is_pause_release and hasattr(key, 'vk') and key.vk == 19:
+                    is_pause_release = True
+                if is_pause_release:
                     logger.info(f"PTT released ({key}). Stopping recording...")
                     self.audio.stop()
 
