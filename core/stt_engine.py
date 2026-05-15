@@ -101,9 +101,10 @@ class STTEngine:
     def __init__(self):
         threading.Thread(target=self._load_tiny, daemon=True).start()
         threading.Thread(target=self._warm_parakeet, daemon=True).start()
-        threading.Thread(target=self._warm_whisper_cpp, daemon=True).start()
         if STT_PROVIDER == "whisper":
             threading.Thread(target=self._warm_large, daemon=True).start()
+        # Warm up faster-whisper with a dummy call after model loads
+        threading.Thread(target=self._warm_fw_tiny, daemon=True).start()
         logger.info(
             f"STT: short={STT_MODEL_SHORT}, long={STT_MODEL_LONG}, "
             f"threshold={LONG_PHRASE_THRESHOLD}s, "
@@ -186,6 +187,20 @@ class STTEngine:
             logger.error(f"Parakeet warm-up failed: {e}")
             self._parakeet_healthy = False
             self._parakeet_health_reason = str(e)
+
+    def _warm_fw_tiny(self):
+        """Run a dummy transcription at boot to pay faster-whisper init cost once."""
+        try:
+            import numpy as np
+            model = self._get_tiny()
+            if model is None:
+                return
+            # 0.1s of silence to trigger any one-time init
+            silence = np.zeros(1600, dtype=np.float32)
+            list(model.transcribe(silence, language="en", beam_size=1, vad_filter=False))
+            logger.info("faster-whisper tiny warmed up.")
+        except Exception as e:
+            logger.debug(f"faster-whisper warm-up skipped: {e}")
 
     def _preprocess_audio(self, wav_bytes: bytes) -> bytes:
         """Lightweight denoising + normalization before STT.

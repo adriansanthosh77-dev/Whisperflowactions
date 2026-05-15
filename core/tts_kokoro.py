@@ -65,8 +65,12 @@ class KokoroTTS:
             )
             self._tts = sherpa_onnx.OfflineTts(config)
             logger.info("Kokoro TTS ready (sherpa-onnx).")
-            # Build cache in background — don't block startup (~19s for 9 phrases)
-            threading.Thread(target=_build_cache, args=(self,), daemon=True).start()
+            # Build cache in background, delayed — let the pipeline start first
+            def _delayed_cache():
+                import time
+                time.sleep(5)  # Give pipeline time to handle first command
+                _build_cache(self)
+            threading.Thread(target=_delayed_cache, daemon=True).start()
         except Exception as e:
             logger.error(f"Kokoro load failed: {e}")
             self._tts = None
