@@ -51,6 +51,7 @@ class AudioCapture:
     def __init__(self, vad_aggressiveness: int = 2, energy_callback=None):
         self.webrtc_vad = webrtcvad.Vad(vad_aggressiveness) if webrtcvad else None
         self._silero_vad = None
+        self._silero_lock = threading.Lock()
         self._stop_signal = False
         self._noise_floor: Optional[float] = None
         self._ring = deque(maxlen=PREROLL_FRAMES)
@@ -58,18 +59,19 @@ class AudioCapture:
         self._energy_counter = 0
         # Pre-warm Silero VAD in background so first frame isn't delayed
         threading.Thread(target=self._get_silero_vad, daemon=True).start()
-        if os.getenv("PREWARM_VAD", "true").strip().lower() not in ("0", "false", "no"):
-            threading.Thread(target=self._get_silero_vad, daemon=True).start()
 
     def _get_silero_vad(self):
         """Lazy-load Silero VAD on first use (ONNX mode, ~2s load once)."""
-        if self._silero_vad is None:
-            try:
-                from silero_vad import load_silero_vad
-                self._silero_vad = load_silero_vad(onnx=True)
-                logger.info("Silero VAD loaded (ONNX mode).")
-            except Exception as e:
-                logger.warning(f"Silero VAD failed to load: {e}")
+        if self._silero_vad is not None:
+            return self._silero_vad
+        with self._silero_lock:
+            if self._silero_vad is None:
+                try:
+                    from silero_vad import load_silero_vad
+                    self._silero_vad = load_silero_vad(onnx=True)
+                    logger.info("Silero VAD loaded (ONNX mode).")
+                except Exception as e:
+                    logger.warning(f"Silero VAD failed to load: {e}")
         return self._silero_vad
 
     def stop(self):
@@ -218,15 +220,30 @@ class AudioCapture:
 
     def _is_speech_fast(self, raw_pcm: bytes, noise_threshold: float = FALLBACK_RMS_THRESHOLD) -> bool:
         rms = self._rms(raw_pcm)
-        # Softer energy gate for PTT
+        # Stage 1: Energy gate (free)
         if rms < noise_threshold * 0.25:
             return False
+
+        # Stage 2: Silero VAD (accurate, ~1-5ms)
+        silero = self._get_silero_vad()
+        if silero is not None:
+            try:
+                import numpy as np
+                audio_float = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+                if len(audio_float) >= 256:
+                    import torch
+                    prob = silero(torch.from_numpy(audio_float), 16000).item()
+                    return prob > _VAD_THRESHOLD
+            except Exception:
+                pass
+
+        # Stage 3: webrtcvad fallback
         if self.webrtc_vad:
             try:
                 return self.webrtc_vad.is_speech(raw_pcm, SAMPLE_RATE)
             except Exception:
                 pass
-        # Use ambient noise floor (not multiplier) for fallback threshold
+        # Stage 4: Energy-only using noise floor
         floor = self._noise_floor or FALLBACK_RMS_THRESHOLD
         return rms > floor
 

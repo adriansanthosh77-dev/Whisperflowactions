@@ -457,23 +457,8 @@ class BaseExecutor:
 
     @classmethod
     def start_keepalive(cls):
-        if cls._prewarm_started or not BROWSER_KEEP_WARM:
-            return
-        cls._prewarm_started = True
-
-        def _loop():
-            cls.prewarm()
-            while BROWSER_KEEP_WARM:
-                time.sleep(20)
-                try:
-                    if not cls._is_port_in_use(OBSCURA_PORT) or not cls.check_health()[0]:
-                        logger.info("Browser keep-warm: CDP not reachable, prewarming...")
-                        cls.close()
-                        cls.prewarm()
-                except Exception as e:
-                    logger.debug("Browser keep-warm check failed: %s", e)
-
-        threading.Thread(target=_loop, daemon=True).start()
+        """Browser launches on-demand when first CDP command is issued.
+        No keep-warm thread needed — saves CPU and avoids random browser launches."""
 
     @classmethod
     def _get_browser_paths(cls) -> list[tuple[str, str]]:
