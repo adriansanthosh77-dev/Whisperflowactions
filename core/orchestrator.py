@@ -170,6 +170,7 @@ class JARVISOrchestrator:
 
         # Register block handler for browser automation
         BaseExecutor.set_block_handler(self._default_block_handler)
+        BaseExecutor.start_keepalive()
 
         # Load plugins
         from core.plugin_manager import get_plugin_manager
@@ -396,7 +397,7 @@ class JARVISOrchestrator:
             
             # START PREDICATIVE CONTEXT COLLECTION in background while user talks
             # This captures the DOM and URL while the user is still speaking.
-            ctx_future = self._pipeline_pool.submit(self.context.collect)
+            ctx_future = self._pipeline_pool.submit(self.context.collect, light=True)
 
             wav_bytes = self.audio.record_until_silence(push_to_talk=True)
             if self._abort_flag: 
@@ -436,10 +437,12 @@ class JARVISOrchestrator:
 
             # Get context (it's been collecting in parallel this whole time)
             ctx = ctx_future.result(timeout=300)
+            t_context = time.time()
 
             text = stt_result.text
             logger.info(f"STT ready in {t_parallel - t_audio:.2f}s → '{text}'")
 
+            logger.info("Context ready in %.2fs (waited %.2fs after STT)", t_context - t_start, t_context - t_parallel)
             lower_text = text.lower().strip()
             if lower_text in ("start dictation", "begin dictation", "dictation mode"):
                 self._dictation_mode()
@@ -460,6 +463,14 @@ class JARVISOrchestrator:
             try:
                 success = self._execute_text(text, ctx)
                 t_end = time.time()
+                logger.info(
+                    "Pipeline timing: capture=%.2fs stt=%.2fs context_wait=%.2fs execute=%.2fs total=%.2fs",
+                    t_audio - t_start,
+                    t_parallel - t_audio,
+                    t_context - t_parallel,
+                    t_end - t_plan_start,
+                    t_end - t_start,
+                )
                 
                 metric = SessionMetric(
                     timestamp=t_start, command=text,

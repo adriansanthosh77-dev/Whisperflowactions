@@ -11,6 +11,7 @@ import logging
 import math
 import array
 import os
+import threading
 from collections import deque
 import sounddevice as sd
 from typing import Optional
@@ -38,11 +39,12 @@ MIN_SPEECH_FRAMES = 2           # ignore sub-60ms noises
 PREROLL_FRAMES = 6
 # Ambient noise sampling
 NOISE_SAMPLE_FRAMES = 6
-ENERGY_THRESHOLD_MULTIPLIER = 2.0
+ENERGY_THRESHOLD_MULTIPLIER = 1.5
 FALLBACK_RMS_THRESHOLD = 250
 
 # Silero VAD config
 _VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.5"))
+PTT_FAST_VAD = os.getenv("PTT_FAST_VAD", "true").strip().lower() not in ("0", "false", "no")
 
 
 class AudioCapture:
@@ -54,6 +56,10 @@ class AudioCapture:
         self._ring = deque(maxlen=PREROLL_FRAMES)
         self._energy_callback = energy_callback
         self._energy_counter = 0
+        # Pre-warm Silero VAD in background so first frame isn't delayed
+        threading.Thread(target=self._get_silero_vad, daemon=True).start()
+        if os.getenv("PREWARM_VAD", "true").strip().lower() not in ("0", "false", "no"):
+            threading.Thread(target=self._get_silero_vad, daemon=True).start()
 
     def _get_silero_vad(self):
         """Lazy-load Silero VAD on first use (ONNX mode, ~2s load once)."""
@@ -136,7 +142,11 @@ class AudioCapture:
                     # Maintain pre-roll ring buffer (before speech check)
                     self._ring.append(raw_bytes)
 
-                    is_speech = self._is_speech(raw_bytes, noise_threshold)
+                    is_speech = (
+                        self._is_speech_fast(raw_bytes, noise_threshold)
+                        if push_to_talk and PTT_FAST_VAD
+                        else self._is_speech(raw_bytes, noise_threshold)
+                    )
 
                     if is_speech:
                         if not speech_started:
@@ -204,6 +214,18 @@ class AudioCapture:
                 pass
 
         # Stage 4: Energy-only fallback
+        return rms > noise_threshold
+
+    def _is_speech_fast(self, raw_pcm: bytes, noise_threshold: float = FALLBACK_RMS_THRESHOLD) -> bool:
+        rms = self._rms(raw_pcm)
+        # Softer energy gate for PTT — pass more to VAD/energy check
+        if rms < noise_threshold * 0.3:
+            return False
+        if self.webrtc_vad:
+            try:
+                return self.webrtc_vad.is_speech(raw_pcm, SAMPLE_RATE)
+            except Exception:
+                pass
         return rms > noise_threshold
 
     def calculate_vibe_urgency(self, wav_bytes: bytes) -> float:

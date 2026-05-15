@@ -159,7 +159,7 @@ class BrowserExecutor(BaseExecutor):
             query = intent.data.get("query") or intent.data.get("text")
             if query:
                 search_url = f"https://www.google.com/search?q={requests.utils.quote(query)}"
-                self.navigate(search_url, wait=True)
+                self.navigate(search_url, wait=False)
                 return True, f"Searched for {query} directly."
 
         if ordinal and action == "click":

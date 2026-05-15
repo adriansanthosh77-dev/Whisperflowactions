@@ -51,6 +51,8 @@ STT_MODEL_LONG = os.getenv("STT_MODEL_LONG", "medium.en").strip()
 LONG_PHRASE_THRESHOLD = float(os.getenv("STT_LONG_THRESHOLD", "2.0"))
 LOW_CONF_THRESHOLD = float(os.getenv("STT_LOW_CONF_THRESHOLD", "0.6"))
 PARAKEET_RETRIES = int(os.getenv("PARAKEET_RETRIES", "1"))
+MIN_STT_SPEECH_SECONDS = float(os.getenv("MIN_STT_SPEECH_SECONDS", "0.35"))
+SHORT_STT_FALLBACK_LOAD = os.getenv("SHORT_STT_FALLBACK_LOAD", "false").strip().lower() in ("1", "true", "yes")
 
 REFLEX_PROMPTS = (
     "JARVIS, assistant, computer, hello, hi, thanks, thank you, open, close, "
@@ -66,6 +68,7 @@ HALLUCINATION_PATTERNS = [
     "Thanks for watching",
     "Please subscribe",
     r"\byou,\s*you(?:,\s*you)*\b",
+    r"\byou[!,.]?\s+you\b",
 ]
 
 
@@ -98,6 +101,7 @@ class STTEngine:
     def __init__(self):
         threading.Thread(target=self._load_tiny, daemon=True).start()
         threading.Thread(target=self._warm_parakeet, daemon=True).start()
+        threading.Thread(target=self._warm_whisper_cpp, daemon=True).start()
         if STT_PROVIDER == "whisper":
             threading.Thread(target=self._warm_large, daemon=True).start()
         logger.info(
@@ -189,6 +193,17 @@ class STTEngine:
         from core.stt_parakeet import preprocess_audio
         return preprocess_audio(wav_bytes, target_rms=0.15)
 
+    def _warm_whisper_cpp(self):
+        """Warm whisper.cpp for very short reflex commands when local files exist."""
+        try:
+            from core.stt_whisper_cpp import transcribe, available
+            if available():
+                silence = self._raw_pcm_to_wav(np.zeros(1600, dtype=np.int16).tobytes())
+                transcribe(silence)
+                logger.info("whisper.cpp ready for short commands.")
+        except Exception as e:
+            logger.debug(f"whisper.cpp warm-up skipped: {e}")
+
     def _get_tiny(self):
         if STTEngine._tiny_model is None:
             self._load_tiny()
@@ -217,20 +232,57 @@ class STTEngine:
 
         # Apply audio preprocessing (noise gate + normalization)
         wav_bytes = self._preprocess_audio(wav_bytes)
+        t_preprocess = time.time()
 
         # Trim leading/trailing silence to get true speech duration
         from core.stt_parakeet import trim_silence
         wav_bytes, speech_dur = trim_silence(wav_bytes)
+        t_trim = time.time()
         if speech_dur <= 0:
+            return None
+        if speech_dur < MIN_STT_SPEECH_SECONDS:
+            logger.info(
+                "STT skipped: speech %.2fs below minimum %.2fs",
+                speech_dur,
+                MIN_STT_SPEECH_SECONDS,
+            )
             return None
         duration = speech_dur
 
         audio = self._decode_audio(wav_bytes)
+        t_decode = time.time()
         if audio is None or audio.size == 0:
             return None
+        logger.info(
+            "STT prep: preprocess=%.2fs trim=%.2fs decode=%.2fs speech=%.2fs",
+            t_preprocess - start,
+            t_trim - t_preprocess,
+            t_decode - t_trim,
+            speech_dur,
+        )
 
         # Short speech (< 1.5s true speech) → Whisper tiny for instant reflex
         if speech_dur < 1.5:
+            try:
+                from core.stt_whisper_cpp import transcribe as cpp_transcribe, available as cpp_available
+                if cpp_available():
+                    cpp_result = cpp_transcribe(wav_bytes)
+                    if cpp_result:
+                        text, confidence = cpp_result
+                        text = self._clean_text(text)
+                        if not text:
+                            return None
+                        elapsed = time.time() - start
+                        logger.info(f"whisper.cpp: '{text[:60]}' conf={confidence:.2f} in {elapsed:.2f}s")
+                        return STTResult(text=text, words=[], confidence=confidence,
+                                         low_confidence=confidence < LOW_CONF_THRESHOLD,
+                                         low_conf_words=[], model_used="whisper_cpp_tiny",
+                                         duration=speech_dur)
+            except Exception as e:
+                logger.debug(f"whisper.cpp short path skipped: {e}")
+            if STTEngine._tiny_model is None and not SHORT_STT_FALLBACK_LOAD:
+                logger.info("Short STT skipped: whisper.cpp unavailable and tiny model not ready")
+                return None
             return self._fallback_whisper(audio, wav_bytes, speech_dur, start, on_segment)
 
         # ── Parakeet path (primary when configured) ──
@@ -373,6 +425,15 @@ class STTEngine:
         except Exception as e:
             logger.error(f"Audio decode failed: {e}")
             return None
+
+    def _raw_pcm_to_wav(self, raw_pcm: bytes) -> bytes:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(raw_pcm)
+        return buf.getvalue()
 
     def _clean_text(self, text: str) -> str:
         import re

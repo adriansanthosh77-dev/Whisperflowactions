@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 _CLI = Path("whisper-cli.exe")
 _MODEL = Path("models/ggml-tiny.en.bin")
+_TIMEOUT = float(os.getenv("WHISPER_CPP_TIMEOUT", "1.5"))
+_FAILED_UNTIL = 0.0
 
 
 def transcribe(wav_bytes: bytes) -> Optional[tuple[str, float]]:
@@ -21,7 +23,10 @@ def transcribe(wav_bytes: bytes) -> Optional[tuple[str, float]]:
     Returns (text, confidence) or None.
     ~8ms for 0.5s audio, ~50ms for 5s audio.
     """
+    global _FAILED_UNTIL
     if not _CLI.exists() or not _MODEL.exists():
+        return None
+    if _FAILED_UNTIL and __import__("time").time() < _FAILED_UNTIL:
         return None
 
     try:
@@ -32,7 +37,7 @@ def transcribe(wav_bytes: bytes) -> Optional[tuple[str, float]]:
         result = subprocess.run(
             [str(_CLI), "-m", str(_MODEL), tmp, "-otxt", "-nt",
              "-t", str(os.cpu_count() or 4), "-l", "en", "-bo", "1"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=_TIMEOUT,
         )
         text = result.stdout.strip()
         if not text:
@@ -53,7 +58,8 @@ def transcribe(wav_bytes: bytes) -> Optional[tuple[str, float]]:
         return text, confidence
 
     except subprocess.TimeoutExpired:
-        logger.warning("whisper.cpp timed out")
+        _FAILED_UNTIL = __import__("time").time() + 60.0
+        logger.warning(f"whisper.cpp timed out after {_TIMEOUT:.1f}s; disabling for 60s")
         return None
     except Exception as e:
         logger.warning(f"whisper.cpp error: {e}")

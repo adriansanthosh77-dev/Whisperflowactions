@@ -32,6 +32,9 @@ OBSCURA_BIN = os.getenv("OBSCURA_BIN", "obscura.exe")
 SCREENSHOT_DIR = Path("data/screenshots")
 MAX_DOM_ELEMENTS = 40
 BROWSER_PROFILE_DIR = Path("data/browser_profile/jarvis_profile")
+BROWSER_PREWARM = os.getenv("BROWSER_PREWARM", "true").strip().lower() not in ("0", "false", "no")
+BROWSER_KEEP_WARM = os.getenv("BROWSER_KEEP_WARM", "true").strip().lower() not in ("0", "false", "no")
+BROWSER_START_MINIMIZED = os.getenv("BROWSER_START_MINIMIZED", "true").strip().lower() not in ("0", "false", "no")
 
 class CDPClient:
     """Minimalistic CDP client using sync requests/websockets for Obscura."""
@@ -189,6 +192,7 @@ class BaseExecutor:
     _teach_last_url = ""
     _verifier: Optional[VerificationEngine] = None
     _state_lock = threading.Lock()
+    _prewarm_started = False
 
     @classmethod
     def consume_action_events(cls) -> list[dict]:
@@ -440,6 +444,38 @@ class BaseExecutor:
             cls._cdp = None
 
     @classmethod
+    def prewarm(cls):
+        """Start and attach to the automation browser before the first command."""
+        if not BROWSER_PREWARM:
+            return
+        try:
+            t0 = time.time()
+            cls._ensure_browser(force=True)
+            logger.info("Browser prewarmed in %.2fs", time.time() - t0)
+        except Exception as e:
+            logger.warning("Browser prewarm failed: %s", e)
+
+    @classmethod
+    def start_keepalive(cls):
+        if cls._prewarm_started or not BROWSER_KEEP_WARM:
+            return
+        cls._prewarm_started = True
+
+        def _loop():
+            cls.prewarm()
+            while BROWSER_KEEP_WARM:
+                time.sleep(20)
+                try:
+                    if not cls._is_port_in_use(OBSCURA_PORT) or not cls.check_health()[0]:
+                        logger.info("Browser keep-warm: CDP not reachable, prewarming...")
+                        cls.close()
+                        cls.prewarm()
+                except Exception as e:
+                    logger.debug("Browser keep-warm check failed: %s", e)
+
+        threading.Thread(target=_loop, daemon=True).start()
+
+    @classmethod
     def _get_browser_paths(cls) -> list[tuple[str, str]]:
         paths = []
         configured = os.getenv("BROWSER_EXECUTABLE_PATH", "").strip()
@@ -487,7 +523,7 @@ class BaseExecutor:
 
         if not cls._cdp:
             cls._cdp = CDPClient(port=OBSCURA_PORT)
-            connected = cls._cdp.connect()
+            connected = cls._is_port_in_use(OBSCURA_PORT) and cls._cdp.connect()
 
             stealth_mode = os.getenv("USE_OBSCURA", "false").lower() == "true"
 
@@ -561,6 +597,9 @@ class BaseExecutor:
                 ]
                 if IS_WINDOWS:
                     flags.append("--disable-gpu")
+                    if BROWSER_START_MINIMIZED:
+                        flags.append("--start-minimized")
+                flags.append("about:blank")
                 try:
                     popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
                     if IS_WINDOWS:

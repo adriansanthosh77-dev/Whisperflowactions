@@ -389,6 +389,27 @@ def _fast_plan(text: str) -> list[IntentResult]:
             )
         ]
 
+    # Keep common "open X and search Y" commands on the pure-Python path.
+    open_search = _R["open_search"].match(raw)
+    if open_search:
+        app = _clean_app_name(open_search.group(1))
+        query = open_search.group(2).strip(" .")
+        return [
+            IntentResult(
+                "browser_action",
+                app,
+                "",
+                {
+                    "goal": f"search for {query}",
+                    "action": "search",
+                    "query": query,
+                    "max_steps": 1,
+                },
+                0.95,
+                raw,
+            ),
+        ]
+
     # --- 2. COMPLEXITY CHECK ---
     # If the command contains multiple steps (conjunctions), 
     # force it to the Full Planner or Teach Mode.
@@ -458,7 +479,11 @@ def _fast_plan(text: str) -> list[IntentResult]:
         
         # Check if the query itself starts with an app name (e.g. "youtube lo-fi music")
         words = query.split()
-        if len(words) > 1 and words[0] in DESKTOP_APPS or words[0] in ("youtube", "github", "reddit", "amazon"):
+        if len(words) == 1 and words[0] in ("youtube", "github", "reddit", "amazon"):
+            app = words[0]
+            return [IntentResult("open_app", app, app, {}, 0.92, raw)]
+
+        if len(words) > 1 and (words[0] in DESKTOP_APPS or words[0] in ("youtube", "github", "reddit", "amazon")):
             app = words[0]
             real_query = " ".join(words[1:])
             return [
@@ -1323,6 +1348,13 @@ class Planner:
             return
 
         # ── STEP 1: PYTHON SPLITTER (Direct Logic) ──
+        direct_steps = list(_fast_plan(text))
+        is_command_list = bool(re.search(r"[,;]|\bthen\b|\bafter that\b", text, re.I))
+        if direct_steps and not is_command_list:
+            logger.info(f"Direct reflex matched: {text}")
+            yield from direct_steps
+            return
+
         raw_commands = re.split(r'\s*(?:[,;]|\band\b|\bthen\b|\bafter that\b)\s*', text, flags=re.IGNORECASE)
         
         for cmd in raw_commands:
