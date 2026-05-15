@@ -538,9 +538,9 @@ class JARVISOrchestrator:
         if not taught and not is_reflex and task_type == "general" and not any(k in lower_text for k in ["teach me", "teach jarvis", "save this agent", "switch to", "load", "?"]):
             from executors.pc_executor import PCExecutor
             from core.planner import IntentResult
-            intent = IntentResult(intent="pc_action", operation="type", target=text,
+            intent = IntentResult(intent="pc_action", target=text,
                                   data={"operation": "type", "text": text, "safety_level": "safe"},
-                                  confidence=0.9, raw=text)
+                                  confidence=0.9, raw_text=text)
             success, msg = PCExecutor().execute(intent, ctx)
             if success:
                 self.overlay.set_state(State.SUCCESS, f"Typed: {text[:40]}")
