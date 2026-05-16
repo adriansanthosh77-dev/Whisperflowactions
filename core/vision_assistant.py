@@ -20,11 +20,14 @@ class VisionAssistant:
     def __init__(self, vision_engine=None):
         self._vision = vision_engine
         self._directml = None
+        self._directml_checked = False
         self._screen_width = 1920
         self._screen_height = 1080
-        self._init_directml()
 
-    def _init_directml(self):
+    def _ensure_directml(self):
+        if self._directml_checked:
+            return
+        self._directml_checked = True
         try:
             from core.vision_directml import get_directml_vision
             dml = get_directml_vision()
@@ -96,6 +99,7 @@ class VisionAssistant:
             logger.debug(f"OCR text find failed: {e}")
 
         # Priority 2: DirectML YOLO — find by object (GPU-accelerated, precise bbox)
+        self._ensure_directml()
         if self._directml:
             try:
                 obj = self._directml.find_object(path, target_description)
@@ -171,6 +175,7 @@ class VisionAssistant:
 
     def detect_objects(self) -> list[dict]:
         """Detect objects on screen using DirectML YOLO (GPU-accelerated)."""
+        self._ensure_directml()
         path = self.capture_screenshot()
         if not path or not self._directml:
             return []

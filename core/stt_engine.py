@@ -100,11 +100,12 @@ class STTEngine:
 
     def __init__(self):
         threading.Thread(target=self._load_tiny, daemon=True).start()
-        threading.Thread(target=self._warm_parakeet, daemon=True).start()
         if STT_PROVIDER == "whisper":
             threading.Thread(target=self._warm_large, daemon=True).start()
         # Warm up faster-whisper with a dummy call after model loads
         threading.Thread(target=self._warm_fw_tiny, daemon=True).start()
+        # Quick Parakeet health check (file existence, <1s) — model loads on demand
+        threading.Thread(target=self._check_parakeet_health, daemon=True).start()
         logger.info(
             f"STT: short={STT_MODEL_SHORT}, long={STT_MODEL_LONG}, "
             f"threshold={LONG_PHRASE_THRESHOLD}s, "
@@ -164,30 +165,6 @@ class STTEngine:
         finally:
             STTEngine._large_ready.set()
 
-    def _warm_parakeet(self):
-        """Pre-warm Parakeet model in background thread.
-        Checks health first, then loads asynchronously."""
-        from core.stt_parakeet import check_parakeet_health, get_parakeet_stt
-        healthy, reason = check_parakeet_health()
-        self._parakeet_healthy = healthy
-        self._parakeet_health_reason = reason
-        if not healthy:
-            logger.warning(f"Parakeet not cached: {reason}")
-            return
-        logger.info("Parakeet model cached — warming up...")
-        try:
-            pk = get_parakeet_stt(lazy=False)
-            if pk.is_loaded():
-                logger.info("Parakeet model ready.")
-            else:
-                logger.error(f"Parakeet load failed: {pk.health()[1]}")
-                self._parakeet_healthy = False
-                self._parakeet_health_reason = pk.health()[1]
-        except Exception as e:
-            logger.error(f"Parakeet warm-up failed: {e}")
-            self._parakeet_healthy = False
-            self._parakeet_health_reason = str(e)
-
     def _warm_fw_tiny(self):
         """Run a dummy transcription at boot to pay faster-whisper init cost once."""
         try:
@@ -201,6 +178,21 @@ class STTEngine:
             logger.info("faster-whisper tiny warmed up.")
         except Exception as e:
             logger.debug(f"faster-whisper warm-up skipped: {e}")
+
+    def _check_parakeet_health(self):
+        """Quick health check for Parakeet (file existence, <1s).
+        Sets _parakeet_healthy flag without loading the 23s model.
+        Model loads on first long-speech command; Whisper handles it instantly."""
+        try:
+            from core.stt_parakeet import check_parakeet_health
+            healthy, reason = check_parakeet_health()
+            self._parakeet_healthy = healthy
+            self._parakeet_health_reason = reason
+            if healthy:
+                logger.info("Parakeet model cached, will load on demand.")
+        except Exception as e:
+            self._parakeet_healthy = False
+            self._parakeet_health_reason = str(e)
 
     def _preprocess_audio(self, wav_bytes: bytes) -> bytes:
         """Lightweight denoising + normalization before STT.
@@ -273,17 +265,21 @@ class STTEngine:
         if STT_PROVIDER == "parakeet":
             from core.stt_parakeet import get_parakeet_stt
 
+            # Health check may not have completed yet — use Whisper for now
             if not hasattr(self, '_parakeet_healthy'):
-                pk = get_parakeet_stt(lazy=True)
-                ready = pk.wait_until_ready(timeout=60.0)
-                if not ready:
-                    logger.warning("Parakeet not ready — falling back to Whisper")
-                    return self._fallback_whisper(audio, wav_bytes, duration, start, on_segment)
-            elif not self._parakeet_healthy:
+                return self._fallback_whisper(audio, wav_bytes, duration, start, on_segment)
+
+            if not self._parakeet_healthy:
                 logger.warning(f"Parakeet unhealthy ({self._parakeet_health_reason}) — falling back to Whisper")
                 return self._fallback_whisper(audio, wav_bytes, duration, start, on_segment)
 
-            pk = get_parakeet_stt()
+            pk = get_parakeet_stt(lazy=True)
+            if not pk.is_loaded():
+                # First long command: load Parakeet in background, use Whisper now
+                logger.info("Parakeet cached but not loaded — pre-warming for next command")
+                threading.Thread(target=pk._load_model, daemon=True).start()
+                return self._fallback_whisper(audio, wav_bytes, duration, start, on_segment)
+
             last_error = None
             for attempt in range(1, PARAKEET_RETRIES + 1):
                 try:

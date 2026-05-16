@@ -191,7 +191,7 @@ class Overlay:
                 stderr=subprocess.DEVNULL,
             )
 
-            logger.info("Electron HUD launched (PID: {os.getpid()}, parent monitor active).")
+            logger.info(f"Electron HUD launched (PID: {os.getpid()}, parent monitor active).")
             return True
         except Exception as e:
             logger.error("Failed to launch Electron HUD: %s", e)

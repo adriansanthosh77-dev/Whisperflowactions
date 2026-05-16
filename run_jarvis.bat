@@ -2,7 +2,8 @@
 title JARVIS - Just A Rather Very Intelligent System
 cd /d "%~dp0"
 
-mode con: cols=72 lines=20
+mode con: cols=72 lines=40
+powershell -NoProfile -Command "[console]::BufferWidth=72; [console]::BufferHeight=9999; [console]::WindowHeight=40" 2>nul
 
 echo ==================================================================
 echo         JARVIS - Just A Rather Very Intelligent System
@@ -35,12 +36,12 @@ if %errorlevel% neq 0 (
 )
 
 echo [....] Starting JARVIS...
-echo [....] (This takes 5-15 seconds to load models)
+echo [....] (Takes ~30-45 seconds to load models)
 echo.
-set KMP_DUPLICATE_LIB_OK=TRUE
 
-:: Launch and show live logs
-venv\Scripts\python.exe core\orchestrator.py 2>&1
+:: Launch and show live logs (also write to file for review)
+if not exist "logs" mkdir "logs"
+powershell -NoProfile -Command "$env:KMP_DUPLICATE_LIB_OK='TRUE'; .\venv\Scripts\python.exe core\orchestrator.py 2>&1 | Tee-Object -FilePath 'logs/latest_session.log'"
 
 :: If we get here, orchestrator exited
 echo.
