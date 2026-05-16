@@ -85,6 +85,9 @@ class AudioCapture:
 
     def _sample_noise_floor(self, stream) -> float:
         """Sample ambient noise level. Returns the RMS threshold to use."""
+        # Pre-warm mic by discarding first frames (stale buffer from stream init)
+        for _ in range(5):
+            stream.read(FRAME_SIZE)
         rms_values = []
         for _ in range(NOISE_SAMPLE_FRAMES):
             raw, _ = stream.read(FRAME_SIZE)

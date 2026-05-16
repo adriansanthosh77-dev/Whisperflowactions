@@ -140,13 +140,8 @@ _TTS_CACHE: dict[str, tuple] = {}
 _CACHED_PHRASES = [
     "Executing",
     "Done",
-    "All tasks completed",
     "I didn't catch that",
     "Could you repeat it?",
-    "Task aborted",
-    "Cancelled",
-    "Listening",
-    "One moment",
 ]
 
 
